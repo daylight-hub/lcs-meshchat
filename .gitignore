@@ -20,3 +20,7 @@ APPLY_LCS_BUNDLE.md
 
 __pycache__/
 *.pyc
+
+# python bytecode
+__pycache__/
+*.pyc

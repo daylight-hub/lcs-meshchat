@@ -3,6 +3,37 @@
 Version history for LCS MeshChat. The release workflow reads the
 section matching the version being built and uses it as the release body.
 
+### What's new in v1.9.6
+
+- **The frequency preset dropdown now appears.** It was never reaching the page: the
+  script looked for `.panel` / `.tabbody` / `.tab-content`, and the console has none
+  of those. It now anchors on the console's real markup and sits directly above the
+  Frequency field on the RNode radio namespace, under Transport Config. The
+  modem-parameter warning was failing the same way and is fixed with it.
+- **Auto-discovery sweeps the local network.** Discovery now runs in three tiers —
+  this page's own address, then this computer, then a sweep of `.local` names on the
+  proxy port 8443 and the usual published container ports. Hosts that have answered
+  before are remembered and tried first, and `?hosts=depot.local` adds a name of your
+  own. This is for Docker deployments reached by mDNS name.
+- **Docker connection failures now say which side is at fault.** If the bridge answers
+  over HTTPS on the same address but the WebSocket will not open, the console says so
+  and points at the self-signed certificate, with a link to accept it. Every failure
+  banner now carries a box to type an address into directly, so a failed discovery
+  never leaves you stuck. `window.__lcsBridgeDiscovery` records every address tried
+  and why each failed.
+- **The console is built from source, and tested.** The two LCS scripts now live in
+  `tools/console/` and are injected by `tools/console/build_console.py`, which also
+  verifies that every selector they depend on still exists in the console bundle.
+  `sh tools/console/run_tests.sh` drives the built console in a headless browser: 44
+  checks covering the preset dropdown, the warnings and end-to-end discovery against
+  a real WebSocket server. The preset dropdown shipped broken twice because nothing
+  ever loaded the page.
+- **Documentation reorganised.** Docker install, the reverse proxy for OpenWrt 24.10
+  and Debian, reaching the console through it and troubleshooting are now in
+  [`docs/DOCKER.md`](DOCKER.md). Voice — full duplex, push-to-talk half duplex,
+  switching codec mid-call, and what each link speed can carry — is in
+  [`docs/VOICE.md`](VOICE.md). The README is a feature list and an index again.
+
 ### What's new in v1.9.5
 
 - **README restructured** — a single feature list replaces the version-by-version
