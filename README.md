@@ -23,7 +23,6 @@ by Liam Cottle (MIT licensed — see `LICENSE`).
 | [**Docker**](docs/DOCKER.md) | Container install, the HTTPS reverse proxy for OpenWrt and Debian, reaching the console through it, troubleshooting |
 | [**Voice calls**](docs/VOICE.md) | Full duplex, push-to-talk, switching codec mid-call, and what each link speed can carry |
 | [**RNS console bridge**](docs/rns-console-bridge.md) | How remote node management over Reticulum works, and the one-time setup each node needs |
-| [**Code signing**](docs/code-signing.md) | The Windows download warning, and where signing stands |
 | [**Changelog**](docs/CHANGELOG.md) | Version history |
 | [Raspberry Pi](docs/meshchat_on_raspberry_pi.md) · [Android/Termux](docs/meshchat_on_android_with_termux.md) | Upstream platform guides |
 
@@ -91,26 +90,19 @@ remote management differ only in which transport you pick.
   `/rns/ws` and turns it into Reticulum Link and Request traffic aimed at a node's
   `/provision` handler. It runs on the RNS instance and identity MeshChat already
   has: no sidecar daemon, no second identity store, no extra port. Node Status and
-  Transport Config are available; Logs and Node Config need a local transport,
+  Transport Config are available; Logs and Node Config need a usb-c serial connection,
   because they rely on legacy KISS frames that do not cross the Reticulum hop.
 - **Auto-connect** — the console finds the bridge itself, in three tiers: this page's
   own address first, then this computer, then a sweep of the local network for
   `.local` names on the proxy port. Hosts that have worked before are tried first.
   When a browser blocks the connection it names the actual cause, and offers a box to
   type an address into.
-- **Setup guidance** — selecting the LCS MeshChat transport explains the one-time
-  wired step of adding your Identity Hash to the node's remote-management allow list.
-- **Frequency presets** on Node Config and Transport Config, with the same labels as
-  the app's RNode interface dropdown. On a node reached over the mesh, selecting one
-  asks for confirmation first and warns that saving will take the node off the mesh
-  permanently.
-- **Deep links** — `?dest=`, `?aspect=`, `?transport=`, `?ws=`, `?hosts=`, `?port=`,
-  `?token=`, `?identify=0`.
+- **Setup Remote Management** — selecting the LCS MeshChat transport explains the one-time usb-c wire step of adding your Identity Hash (not LXMF address) to the node's remote-management allow list.
+- **Network Visualizer** will show the microReticulum node. This is **not** the address to enter in the transport console. Click on the node to open its nomadnet page. You may have to click the button to identify yourself(the fingerprint button). Then click **General**. Copy the management destination listed and paste over in the transport console **destination hash** box. click **connect**.
 
 ### Blackhole management
 
-- **Block Contact** in a conversation's three-dot menu, backed by the same Reticulum
-  calls `rnpath -B/-U/-b` drives. Blocks are permanent until removed.
+- **Block Contact** in a conversation's three-dot menu, blocks permanently until removed.
 - Identity resolution without needing a recent announce: RNS's persisted
   known-destinations table, then MeshChat's own announce records, then a path request.
 - **Block an identity directly** by pasting its hash in Settings. The
@@ -141,26 +133,7 @@ released binaries.
 that the installer is not commonly downloaded. This is a reputation check on the
 signature of the file, not a finding about its content — it appears for any new
 unsigned binary regardless of what it does. See
-[docs/code-signing.md](docs/code-signing.md) for the status of signing.
-
-## Build & deploy
-
-- **Docker** — GitHub Actions builds a multi-arch image on every push to the `lcs`
-  branch, pushed to `ghcr.io/<owner>/reticulum-meshchat:latest` and `:lcs`.
-- **Desktop apps** (Windows/Mac/Linux) — built on a version tag push, or via the
-  Actions "Run workflow" button with the desktop-build option enabled. All desktop
-  artifacts attach to a single release. Mac builds install `codec2` via Homebrew so
-  the `pycodec2` dependency compiles.
-- **Transport console** — the console is a vendored single-file build with two LCS
-  scripts appended. Edit the sources in `tools/console/`, then:
-
-  ```sh
-  sh tools/console/run_tests.sh
-  ```
-
-  which rebuilds `src/frontend/public/transport-console/index.html` and drives the
-  result in a headless browser to check the additions still attach. Never hand-edit
-  the built console. 
+[docs/code-signing.md](docs/code-signing.md) for the status of signing. 
 
 ## License
 
