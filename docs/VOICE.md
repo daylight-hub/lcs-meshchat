@@ -94,38 +94,6 @@ up for its whole duration; a clip does not.
 
 ---
 
-## Managing transport nodes over the same mesh
-
-Voice and node management run over the same Reticulum instance, so the mesh that
-carries a call is the mesh that carries the Transport Node Console.
-
-The console is at **Tools → Transport Console**, and it is the same console whether
-the node is on the bench or on a hilltop:
-
-- **Locally** — connect over **Serial** (USB-C), **Bluetooth**, or a **LAN
-  WebSocket**. All tabs are available, including Logs and Node Config.
-- **Remotely** — connect over **RNS (via LCS MeshChat)** and reach any node on the
-  mesh, at any distance, with no sidecar daemon, no second identity and no extra
-  port. Node Status and Transport Config are available; Logs and Node Config are not,
-  because they rely on legacy KISS frames that do not cross the Reticulum hop.
-
-Everything else is identical: the same fields, the same namespaces, the same
-frequency presets with the same labels as the app's own RNode dropdown. So the node
-you provisioned over a cable is configured the same way a year later from across the
-network.
-
-One caveat, and the console states it plainly on the page: **do not change radio
-parameters on a node you reached over the air.** Frequency, bandwidth, spreading
-factor and coding rate are how that node reaches the mesh you are talking to it
-through. Change one, save it, and the node applies it, stops matching everything
-around it and goes silent — with no path left to undo it. Selecting a frequency
-preset over Reticulum asks for confirmation first. Recovering a node that has been
-taken off its own mesh means physically reaching it with a USB-C cable.
-
-Commissioning a node's radio settings is a wired job. Everything after that is not.
-
----
-
 ## Requirements
 
 - **A secure context.** Browsers only grant microphone access over HTTPS or on
