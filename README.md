@@ -52,19 +52,18 @@ microphone access in a secure context. That setup is in the Docker guide.
 
 ### Branding and navigation
 
-- LCS logo throughout, "LCS MeshChat" naming, brand accent styling. Reports as LCS
-  MeshChat, and the About page shows the LXST version.
+- Updated to the most recent RNS version 1.5.4, LXMF version 1.1.1, and LXST version 0.5.3.
 - **Add LCS Interfaces** — a header button opens a dialog to add LCS network
   interfaces to Reticulum. Choose which to add, whether to enable them immediately,
   and auto-detect a connected RNode's serial port:
-  - **LCS Gateway Client** — `public.lcs.network` (TCP, gateway mode)
+  - **LCS Gateway Client** — (TCP, gateway mode)
   - **IP RNode** — `iprnode.local:4545` (TCP, network-attached RNode)
-  - **RNode LoRa** — direct serial LoRa radio (914.875 MHz, SF11), added disabled
+  - **RNode LoRa** — direct serial LoRa radio (914.875 MHz), added disabled
     unless a serial port is provided.
 - **Restart button** (Docker builds only) — restarts the app process, relying on the
   container's `restart: unless-stopped` policy. Does not need the Docker socket.
-- **Back button**, **incoming call ringtone**, and a **Buy RNode Radios** link in the
-  sidebar and Tools.
+- **Incoming call ringtone added**
+- **RNode management console** in tools
 
 ### Voice — [full guide](docs/VOICE.md)
 
@@ -84,7 +83,7 @@ microphone access in a secure context. That setup is in the Docker guide.
 
 ### Transport Node Console — Tools → Transport Console
 
-The same console whether the node is on your desk or across the mesh. Local and
+Use the same console whether the transport node is on your desk or remote across the mesh. Local and
 remote management differ only in which transport you pick.
 
 - **Local** — Serial (USB-C), Bluetooth, or a LAN WebSocket. All tabs available.
@@ -117,11 +116,9 @@ remote management differ only in which transport you pick.
 - **Block an identity directly** by pasting its hash in Settings. The
   `<angle bracket>` form RNS prints is accepted, as is colon-delimited hex.
 - **Publish** your blocked list for others to subscribe to, served at
-  `rnstransport.info.blackhole`, and **subscribe** to lists from transport instances
+  `rnstransport.info.blackhole'
+  **Subscribe** to lists from transport instances
   you trust, with a configurable update interval.
-- Blocking is identity-scoped and applies to your own network segments only. Publish
-  and subscribe settings are read by Reticulum at startup and need a restart;
-  blocking and unblocking do not.
 
 ### Deployment
 
@@ -130,8 +127,6 @@ remote management differ only in which transport you pick.
   the `Host` header.
 - Origin allowlist on the bridge, since WebSockets bypass CORS, plus an optional
   `--rns-bridge-token` shared secret.
-- Draft releases get a generated body: the matching section of `docs/CHANGELOG.md`,
-  followed by the commits since the previous tag.
 
 ## Privacy
 
@@ -165,7 +160,7 @@ unsigned binary regardless of what it does. See
 
   which rebuilds `src/frontend/public/transport-console/index.html` and drives the
   result in a headless browser to check the additions still attach. Never hand-edit
-  the built console.
+  the built console. 
 
 ## License
 
