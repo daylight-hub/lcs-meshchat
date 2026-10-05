@@ -16,7 +16,7 @@ jobs:
       # ghcr image names must be lowercase; derive it from the fork owner.
       - name: Compute image name
         id: img
-        run: echo "name=ghcr.io/${GITHUB_REPOSITORY_OWNER,,}/reticulum-meshchat" >> "$GITHUB_OUTPUT"
+        run: echo "name=ghcr.io/${GITHUB_REPOSITORY_OWNER,,}/lcs-meshchat" >> "$GITHUB_OUTPUT"
 
       - name: Set up QEMU
         uses: docker/setup-qemu-action@v3

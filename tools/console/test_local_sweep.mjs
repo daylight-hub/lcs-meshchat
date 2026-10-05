@@ -35,8 +35,9 @@ try {
 }
 
 const DOCUMENTED = [
-  "liberty.local", "meshchat.local", "lcs.local", "reticulum-meshchat.local",
-  "rns.local", "openwrt.local", "raspberrypi.local", "nas.local"
+  "liberty.local", "meshchat.local", "lcs.local", "lcs-meshchat.local",
+  "reticulum-meshchat.local", "rns.local", "openwrt.local", "raspberrypi.local",
+  "nas.local"
 ];
 
 const fail = [], ok = [];

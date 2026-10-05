@@ -29,14 +29,14 @@ by Liam Cottle (MIT licensed — see `LICENSE`).
 ## Install
 
 **Desktop** — download the installer for Windows, macOS or Linux from
-[Releases](https://github.com/daylight-hub/reticulum-meshchat/releases).
+[Releases](https://github.com/daylight-hub/lcs-meshchat/releases).
 
 **Docker** — see [docs/DOCKER.md](docs/DOCKER.md). The short version:
 
 ```sh
-docker run -d --name reticulum-meshchat --restart unless-stopped \
-  -e LCS_DOCKER=1 -p 8082:8000 -v /opt/reticulum-meshchat:/config \
-  ghcr.io/daylight-hub/reticulum-meshchat:latest \
+docker run -d --name lcs-meshchat --restart unless-stopped \
+  -e LCS_DOCKER=1 -p 8082:8000 -v /opt/lcs-meshchat:/config \
+  ghcr.io/daylight-hub/lcs-meshchat:latest \
   python meshchat.py --host=0.0.0.0 --port=8000 \
   --reticulum-config-dir=/config/.reticulum \
   --storage-dir=/config/.meshchat --headless
@@ -132,8 +132,8 @@ released binaries.
 **A note on the Windows download warning.** Microsoft Edge and SmartScreen may warn
 that the installer is not commonly downloaded. This is a reputation check on the
 signature of the file, not a finding about its content — it appears for any new
-unsigned binary regardless of what it does. See
-[docs/code-signing.md](docs/code-signing.md) for the status of signing. 
+unsigned binary regardless of what it does. The warning clears once a release
+accumulates download reputation, or sooner with a code-signing certificate.
 
 ## License
 

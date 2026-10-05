@@ -37,6 +37,7 @@
     "liberty.local",
     "meshchat.local",
     "lcs.local",
+    "lcs-meshchat.local",
     "reticulum-meshchat.local",
     "rns.local",
     "openwrt.local",

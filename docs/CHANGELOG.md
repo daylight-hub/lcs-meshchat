@@ -3,6 +3,21 @@
 Version history for LCS MeshChat. The release workflow reads the
 section matching the version being built and uses it as the release body.
 
+### What's new in v1.9.7
+
+- **Moved to its own repository.** LCS MeshChat now lives at
+  `daylight-hub/lcs-meshchat` rather than as a fork. The **Check for Updates**
+  button on the About page points there, and releases are published there.
+- **Docker image renamed** to `ghcr.io/daylight-hub/lcs-meshchat`. Update the
+  `image:` line in your compose file and pull again; nothing else changes. Your
+  config volume, Reticulum identity and message history are untouched.
+- **`lcs-meshchat.local` added to the console's address sweep**, alongside the
+  names it already tried.
+
+Upgrading from v1.9.6 needs no migration. The storage directory
+(`~/.reticulum-meshchat` on desktop, `/config` in the container) is deliberately
+unchanged, so identities and message history carry over as-is.
+
 ### What's new in v1.9.6
 
 - **The frequency preset dropdown now appears.** It was never reaching the page: the

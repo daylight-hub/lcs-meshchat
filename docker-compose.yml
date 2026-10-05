@@ -1,10 +1,14 @@
 services:
-  reticulum-meshchat:
-    container_name: reticulum-meshchat
-    image: ghcr.io/liamcottle/reticulum-meshchat:latest
+  lcs-meshchat:
+    container_name: lcs-meshchat
+    image: ghcr.io/daylight-hub/lcs-meshchat:latest
     pull_policy: always
     restart: unless-stopped
-    # Make the meshchat web interface accessible from the host on port 8000
+    # Tells the app it is containerised, so it uses the browser audio bridge
+    # instead of looking for audio hardware it does not have. Leave it set.
+    environment:
+      - LCS_DOCKER=1
+    # Make the web interface accessible from the host on port 8000
     ports:
       - 0.0.0.0:8000:8000
     volumes:

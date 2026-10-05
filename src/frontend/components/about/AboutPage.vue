@@ -17,7 +17,7 @@
                         </div>
                         <div class="hidden sm:block mx-2 my-auto">
                             <a target="_blank" 
-                                href="https://github.com/daylight-hub/reticulum-meshchat/releases/latest" 
+                                href="https://github.com/daylight-hub/lcs-meshchat/releases/latest" 
                                 type="button" 
                                 class="my-auto inline-flex items-center gap-x-1 rounded-md bg-gray-500 dark:bg-zinc-700 px-2 py-1 text-sm font-semibold text-white shadow-sm hover:bg-gray-400 dark:hover:bg-zinc-600 focus-visible:outline focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-gray-500 dark:focus-visible:outline-zinc-600">
                                 Check for Updates

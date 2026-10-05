@@ -19,9 +19,9 @@ that proxy, and what to do when something does not connect.
 
 ```yaml
 services:
-  reticulum-meshchat:
-    container_name: reticulum-meshchat
-    image: ghcr.io/daylight-hub/reticulum-meshchat:latest
+  lcs-meshchat:
+    container_name: lcs-meshchat
+    image: ghcr.io/daylight-hub/lcs-meshchat:latest
     restart: unless-stopped
     network_mode: bridge          # own namespace -> no host port conflicts
     environment:
@@ -29,7 +29,7 @@ services:
     ports:
       - 8082:8000
     volumes:
-      - /opt/reticulum-meshchat:/config
+      - /opt/lcs-meshchat:/config
     command: >
       python meshchat.py --host=0.0.0.0 --port=8000
       --reticulum-config-dir=/config/.reticulum
@@ -56,7 +56,7 @@ branch, and published as `:latest` and `:lcs`.
 | `/config/.reticulum` | Reticulum config and identity |
 | `/config/.meshchat` | MeshChat database, storage, attachments |
 
-Back up `/opt/reticulum-meshchat` and you have backed up the node.
+Back up `/opt/lcs-meshchat` and you have backed up the node.
 
 ---
 
@@ -262,8 +262,8 @@ first address that answers a ping:
    TLS, on the usual published container ports, and on plain 443. Hosts that have
    answered before are swept first, then any given with `?hosts=`, then the
    documented names: `liberty.local`, `meshchat.local`, `lcs.local`,
-   `reticulum-meshchat.local`, `rns.local`, `openwrt.local`, `raspberrypi.local`,
-   `nas.local`.
+   `lcs-meshchat.local`, `reticulum-meshchat.local`, `rns.local`,
+   `openwrt.local`, `raspberrypi.local`, `nas.local`.
 
 A green **RNS bridge found** banner names the address it settled on. No extra flag
 is needed: the bridge accepts same-origin WebSocket connections and tolerates
