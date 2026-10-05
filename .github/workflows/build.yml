@@ -55,6 +55,9 @@ jobs:
             ${{ steps.img.outputs.name }}:lcs
           labels: |
             org.opencontainers.image.title=LCS MeshChat
+            org.opencontainers.image.source=${{ github.server_url }}/${{ github.repository }}
+            org.opencontainers.image.url=${{ github.server_url }}/${{ github.repository }}
+            org.opencontainers.image.revision=${{ github.sha }}
 
   build_windows:
     if: startsWith(github.ref, 'refs/tags/') || (github.event_name == 'workflow_dispatch' && inputs.make_release)
