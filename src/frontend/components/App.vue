@@ -23,6 +23,15 @@
                         </div>
                     </label>
 
+                    <!-- Command Center PRO Client -->
+                    <label class="flex items-start gap-3 p-3 rounded-lg border border-gray-200 dark:border-zinc-700 hover:bg-gray-50 dark:hover:bg-zinc-800 cursor-pointer">
+                        <input type="checkbox" v-model="lcsForm.command_center" class="mt-1" />
+                        <div>
+                            <div class="font-medium text-gray-900 dark:text-zinc-100">Command Center PRO Client</div>
+                            <div class="text-xs text-gray-500 dark:text-zinc-400">liberty.local:4246 — connects to a Command Center PRO on your own network</div>
+                        </div>
+                    </label>
+
                     <!-- IP RNode -->
                     <label class="flex items-start gap-3 p-3 rounded-lg border border-gray-200 dark:border-zinc-700 hover:bg-gray-50 dark:hover:bg-zinc-800 cursor-pointer">
                         <input type="checkbox" v-model="lcsForm.ip_rnode" class="mt-1" />
@@ -518,6 +527,8 @@ export default {
             lcsSerialPorts: [],
             lcsForm: {
                 lcs_gateway: true,
+                // optional, off by default: only useful if you run a Command Center PRO
+                command_center: false,
                 ip_rnode: true,
                 rnode_lora: false,
                 enable: true,
@@ -585,6 +596,16 @@ export default {
                 case 'announced': {
                     // we just announced, update config so we can show the new last updated at
                     this.getConfig();
+                    break;
+                }
+                case 'lxmf.delivery': {
+                    // LCS: audible alert for a newly received message. Outbound
+                    // messages come back through the same broadcast when their
+                    // delivery state changes, so only alert on inbound ones.
+                    const isOutbound = json.lxmf_message?.is_outbound === true;
+                    if(!isOutbound){
+                        this.playMessageAlert();
+                    }
                     break;
                 }
                 case 'incoming_audio_call': {
@@ -874,6 +895,7 @@ export default {
             // build the selected list from the checkboxes
             const selected = [];
             if (this.lcsForm.lcs_gateway) selected.push("lcs_gateway");
+            if (this.lcsForm.command_center) selected.push("command_center");
             if (this.lcsForm.ip_rnode) selected.push("ip_rnode");
             if (this.lcsForm.rnode_lora) selected.push("rnode_lora");
             if (selected.length === 0) {
@@ -911,6 +933,60 @@ export default {
             // no-op: we no longer hold a persistent AudioContext. The ringtone creates
             // and closes its own context on demand so it can never interfere with the
             // system microphone capture used by calls (this was breaking the desktop mic).
+        },
+        // LCS: short two-note chime for a newly received message. Generated with
+        // Web Audio for the same reasons as the ringtone - no asset to ship, works
+        // offline, and no file for a browser to refuse to autoplay. Deliberately
+        // higher and much shorter than the ringtone so the two are never confused,
+        // and it fires once rather than repeating.
+        playMessageAlert() {
+            // off by default only if the user has turned it off
+            if(this.config?.message_alert_enabled === false){
+                return;
+            }
+            try {
+                const AudioCtx = window.AudioContext || window.webkitAudioContext;
+                if(!AudioCtx){
+                    return;
+                }
+                const ctx = new AudioCtx();
+                const play = () => {
+                    const now = ctx.currentTime;
+                    const gain = ctx.createGain();
+                    gain.connect(ctx.destination);
+                    const osc = ctx.createOscillator();
+                    osc.type = "sine";
+                    osc.frequency.setValueAtTime(880, now);
+                    osc.frequency.setValueAtTime(1175, now + 0.09);
+                    osc.connect(gain);
+                    gain.gain.setValueAtTime(0.0001, now);
+                    gain.gain.exponentialRampToValueAtTime(0.2, now + 0.015);
+                    gain.gain.setValueAtTime(0.2, now + 0.08);
+                    gain.gain.exponentialRampToValueAtTime(0.0001, now + 0.09);
+                    gain.gain.setValueAtTime(0.0001, now + 0.09);
+                    gain.gain.exponentialRampToValueAtTime(0.2, now + 0.105);
+                    gain.gain.setValueAtTime(0.2, now + 0.2);
+                    gain.gain.exponentialRampToValueAtTime(0.0001, now + 0.26);
+                    osc.start(now);
+                    osc.stop(now + 0.3);
+                    // release the audio device promptly - holding a context open
+                    // interferes with microphone capture during calls
+                    setTimeout(() => {
+                        try { ctx.close(); } catch(e) { /* ignore */ }
+                    }, 600);
+                };
+                if(ctx.state === "suspended"){
+                    // autoplay policy: no recent user gesture. Play when it resumes,
+                    // and give up quietly if it never does.
+                    ctx.resume().then(play).catch(() => {
+                        try { ctx.close(); } catch(e) { /* ignore */ }
+                    });
+                } else {
+                    play();
+                }
+            } catch(e) {
+                console.error("message alert error:", e);
+            }
         },
         startRingtone() {
             if(this.ringtoneTimer){

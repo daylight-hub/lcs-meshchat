@@ -1,0 +1,44 @@
+[
+  {
+    "id": "sx127x",
+    "name": "LilyGo T-Beam / LoRa32 v2.1, Heltec v2 (SX127x)",
+    "chipset": "SX127x",
+    "ceiling": 17,
+    "note": "SX127x boards accept up to 17 dBm. This covers the LilyGo T-Beam and LoRa32 v2.1."
+  },
+  {
+    "id": "sx1262",
+    "name": "RAK4631, Heltec v3, LilyGo T3S3 (SX1262)",
+    "chipset": "SX1262",
+    "ceiling": 22,
+    "note": "Bare SX1262 boards accept up to 22 dBm."
+  },
+  {
+    "id": "heltec_v4",
+    "name": "Heltec LoRa32 v4 (SX1262 + external PA)",
+    "chipset": "SX1262 + PA",
+    "ceiling": 28,
+    "note": "The v4 carries an external PA rated to 28 dBm (PA_MAX_OUTPUT in the firmware's Boards.h). This figure applies to no other board."
+  },
+  {
+    "id": "sx1280",
+    "name": "2.4 GHz board (SX1280)",
+    "chipset": "SX1280",
+    "ceiling": 13,
+    "note": "Bare SX1280 accepts up to 13 dBm."
+  },
+  {
+    "id": "sx1280_pa",
+    "name": "2.4 GHz board with PA (SX1280 + PA)",
+    "chipset": "SX1280 + PA",
+    "ceiling": 20,
+    "note": "SX1280 with an external PA accepts up to 20 dBm."
+  },
+  {
+    "id": "unknown",
+    "name": "Not sure / other board",
+    "chipset": "unknown",
+    "ceiling": 17,
+    "note": "17 dBm is the safe value: every RNode-supported radio accepts it. Raise it once you know what your board is."
+  }
+]

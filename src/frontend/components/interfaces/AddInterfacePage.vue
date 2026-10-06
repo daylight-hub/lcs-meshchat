@@ -193,12 +193,12 @@
                             </option>
                         </select>
                         <p class="mt-1 text-xs text-gray-500 dark:text-gray-400">
-                            Presets fill in frequency, bandwidth, spreading factor, coding rate and transmit power.
+                            Presets fill in frequency, bandwidth, spreading factor and coding rate.
                             All nodes must use the same preset to hear each other.
                         </p>
                         <p class="mt-1 text-xs text-gray-500 dark:text-gray-400">
-                            ⓘ Transmit power defaults to 22 dBm. RAK and LilyGo boards max out at 22 dBm;
-                            Heltec V4 supports up to 28 dBm.
+                            ⓘ Presets no longer set transmit power — that depends on your board, not on the
+                            modem settings. Set it once below.
                         </p>
                     </div>
 
@@ -248,10 +248,42 @@
                         </select>
                     </div>
 
+                    <!-- radio board, which sets the transmit power ceiling -->
+                    <div v-if="newInterfaceType === 'RNodeInterface'" class="mb-2">
+                        <FormLabel class="mb-1">Radio Board</FormLabel>
+                        <select v-model="selectedRNodeBoard" @change="onRNodeBoardChange" class="bg-gray-50 border border-gray-300 text-gray-900 text-sm rounded-lg focus:ring-blue-500 focus:border-blue-500 block w-full p-2.5 dark:bg-zinc-900 dark:border-zinc-600 dark:text-white dark:focus:ring-blue-600 dark:focus:border-blue-600">
+                            <option v-for="board in rnodeBoards" :key="board.id" :value="board.id">
+                                {{ board.name }} — max {{ board.ceiling }} dBm
+                            </option>
+                        </select>
+                        <p class="mt-1 text-xs text-gray-500 dark:text-gray-400">
+                            {{ selectedRNodeBoardInfo.note }}
+                        </p>
+                    </div>
+
                     <!-- interface txpower -->
                     <div v-if="newInterfaceType === 'RNodeInterface'" class="mb-2">
                         <FormLabel class="mb-1">Transmit Power (dBm)</FormLabel>
-                        <input v-model="newInterfaceTxpower" type="number" class="bg-gray-50 border border-gray-300 text-gray-900 text-sm rounded-lg focus:ring-blue-500 focus:border-blue-500 block w-full p-2.5 dark:bg-zinc-900 dark:border-zinc-600 dark:text-white">
+                        <input v-model.number="newInterfaceTxpower" type="number" min="0" :max="txpowerMax"
+                               class="bg-gray-50 border border-gray-300 text-gray-900 text-sm rounded-lg focus:ring-blue-500 focus:border-blue-500 block w-full p-2.5 dark:bg-zinc-900 dark:border-zinc-600 dark:text-white">
+
+                        <label class="mt-2 flex items-start gap-2 text-xs text-gray-500 dark:text-gray-400 cursor-pointer">
+                            <input type="checkbox" v-model="allowTxpowerOverride" class="mt-0.5">
+                            <span>Allow up to 30 dBm, ignoring this board's ceiling</span>
+                        </label>
+
+                        <!-- the failure this prevents is silent, so say it plainly -->
+                        <p v-if="txpowerExceedsCeiling" class="mt-2 text-xs rounded-md p-2 bg-amber-50 text-amber-800 dark:bg-amber-950 dark:text-amber-300">
+                            <b>{{ newInterfaceTxpower }} dBm is above this board's {{ selectedRNodeBoardInfo.ceiling }} dBm ceiling.</b>
+                            The firmware will clamp it to what the radio can do, Reticulum will see a value
+                            different from the one it asked for, and the interface will fail to start with
+                            <i>TX power mismatch</i> in the logs — the radio will not transmit at all.
+                            Use {{ selectedRNodeBoardInfo.ceiling }} dBm or lower unless you know this
+                            particular board accepts more.
+                        </p>
+                        <p v-else class="mt-1 text-xs text-gray-500 dark:text-gray-400">
+                            This is transmitter output. Antenna gain (dBi) adds on top of it in your EIRP.
+                        </p>
                     </div>
 
                     <div v-if="newInterfaceType === 'RNodeInterface'" class="mb-2 flex flex-wrap items-start gap-4">
@@ -934,6 +966,16 @@
 <script>
 import Utils from "../../js/Utils";
 import DialogUtils from "../../js/DialogUtils";
+// Single source of truth for the modem presets. The Transport Console's two
+// preset dropdowns are generated from this same file by
+// tools/console/build_console.py, so the app and the console can never drift.
+import rnodePresets from "../../js/rnode-presets.json";
+// Per-board transmit power ceilings. The RNode firmware silently clamps any
+// value above a board's own ceiling, and RNS then compares what it asked for
+// against what the radio reports back (RNodeInterface.setTXPower / the
+// "TX power mismatch" check). A clamped value fails that comparison, the
+// interface never comes up, and the radio does not transmit at all.
+import rnodeBoards from "../../js/rnode-boards.json";
 import ExpandingSection from "./ExpandingSection.vue";
 import FormLabel from "../forms/FormLabel.vue";
 import FormSubLabel from "../forms/FormSubLabel.vue";
@@ -1070,16 +1112,13 @@ export default {
             ],
 
             selectedRNodePreset: null,
-            rnodePresets: [
-                { name: "Short Turbo",   frequency: 914875000, bandwidth: 500000, spreadingfactor: 7,  codingrate: 5, params: "SF7 / 500 kHz / CR 4:5", txpower: 22, note: null },
-                { name: "Short Fast",    frequency: 914875000, bandwidth: 250000, spreadingfactor: 7,  codingrate: 5, params: "SF7 / 250 kHz / CR 4:5", txpower: 22, note: "Best for voice over LoRa" },
-                { name: "Average - Recommended for Speed", frequency: 914875000, bandwidth: 250000, spreadingfactor: 8,  codingrate: 5, params: "SF8 / 250 kHz / CR 4:5", txpower: 22, note: null },
-                { name: "Medium Fast",   frequency: 914875000, bandwidth: 250000, spreadingfactor: 9,  codingrate: 5, params: "SF9 / 250 kHz / CR 4:5", txpower: 22, note: null },
-                { name: "Medium Slow",   frequency: 914875000, bandwidth: 250000, spreadingfactor: 10, codingrate: 5, params: "SF10 / 250 kHz / CR 4:5", txpower: 22, note: null },
-                { name: "Long Fast",     frequency: 914875000, bandwidth: 250000, spreadingfactor: 11, codingrate: 5, params: "SF11 / 250 kHz / CR 4:5", txpower: 22, note: "LCS Recommended" },
-                { name: "Long Moderate", frequency: 914875000, bandwidth: 125000, spreadingfactor: 11, codingrate: 8, params: "SF11 / 125 kHz / CR 4:8", txpower: 22, note: null },
-                { name: "Long Slow",     frequency: 914875000, bandwidth: 125000, spreadingfactor: 12, codingrate: 8, params: "SF12 / 125 kHz / CR 4:8", txpower: 22, note: null },
-            ],
+            rnodePresets: rnodePresets,
+            rnodeBoards: rnodeBoards,
+            // which board the RNode is, so transmit power can be held at or below
+            // what its radio will actually accept
+            selectedRNodeBoard: "sx127x",
+            // lets the ceiling be exceeded deliberately, up to 30 dBm
+            allowTxpowerOverride: false,
 
             // Serial, KISS, and AX25KISS options
             newInterfaceSpeed: null,
@@ -1158,6 +1197,21 @@ export default {
                 return `${(totalHz / 1e3).toFixed(3)} kHz`;
             }
             return `${totalHz} Hz`;
+        },
+        selectedRNodeBoardInfo() {
+            return this.rnodeBoards.find((b) => b.id === this.selectedRNodeBoard)
+                || this.rnodeBoards[this.rnodeBoards.length - 1];
+        },
+        // 30 dBm when deliberately overridden, otherwise the board's own ceiling
+        txpowerMax() {
+            return this.allowTxpowerOverride ? 30 : this.selectedRNodeBoardInfo.ceiling;
+        },
+        txpowerExceedsCeiling() {
+            const txpower = Number(this.newInterfaceTxpower);
+            if(!Number.isFinite(txpower)){
+                return false;
+            }
+            return txpower > this.selectedRNodeBoardInfo.ceiling;
         },
     },
     watch: {
@@ -1468,10 +1522,23 @@ export default {
             this.newInterfaceBandwidth = preset.bandwidth;
             this.newInterfaceSpreadingFactor = preset.spreadingfactor;
             this.newInterfaceCodingRate = preset.codingrate;
-            this.newInterfaceTxpower = preset.txpower;
+
+            // Transmit power is deliberately left alone. It is a property of the
+            // board, not of the modem settings, and a preset that forced 22 dBm
+            // onto a 17 dBm SX127x board left it unable to transmit at all.
 
             this.updateRNodeCalculations();
 
+        },
+
+        // Keep transmit power at or below what the chosen board will accept. Without
+        // this, a board change can silently leave a value the radio cannot honour.
+        onRNodeBoardChange() {
+            const ceiling = this.selectedRNodeBoardInfo.ceiling;
+            const txpower = Number(this.newInterfaceTxpower);
+            if(!Number.isFinite(txpower) || txpower <= 0 || (txpower > ceiling && !this.allowTxpowerOverride)){
+                this.newInterfaceTxpower = ceiling;
+            }
         },
         updateRNodeCalculations() {
             this.calculateRNodeParameters(

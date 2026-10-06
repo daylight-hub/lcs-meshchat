@@ -3,6 +3,57 @@
 Version history for LCS MeshChat. The release workflow reads the
 section matching the version being built and uses it as the release body.
 
+### What's new in v1.9.8
+
+**Transmit power now matches what the board can actually do.** Setting 20 dBm on a
+LilyGo and finding it would not transmit was not a limit in LCS MeshChat — there
+was none. The RNode firmware silently clamps anything above a board's own ceiling,
+Reticulum then compares what it asked for against what the radio reports back
+(`RNodeInterface.py`, the `TX power mismatch` check), the values differ, and the
+interface never comes up. SX127x boards, which is what the LilyGo T-Beam and
+LoRa32 v2.1 are, cap at **17 dBm**.
+
+- The RNode interface form has a **Radio Board** picker that holds transmit power
+  at or below that board's ceiling: SX127x 17, SX1262 22, Heltec v4 28, SX1280
+  13, SX1280 with PA 20.
+- **Allow up to 30 dBm** overrides the ceiling deliberately, and the form explains
+  exactly how the failure presents if you exceed what the radio accepts.
+- **Presets no longer set transmit power.** Every preset used to force 22 dBm,
+  which is what broke SX127x boards the moment a preset was selected. Transmit
+  power is a property of the board, so it is now set once, separately.
+- The bundled **RNode LoRa** interface now uses 17 dBm instead of 22.
+
+**Modem presets reworked**, and the app and both Transport Console dropdowns are
+now generated from one file (`src/frontend/js/rnode-presets.json`), so they cannot
+drift apart again.
+
+- New **Long Range / Turbo** (SF11 / 500 kHz / CR 4:8), between Medium Slow and
+  Long Fast.
+- **Average - Recommended for Speed** is called **Short Slow** again.
+- **Short Slow**, **Medium Fast** and **Medium Slow** are marked
+  ★ *good range and speed with high repeaters*.
+- **Long Fast** is marked ★ *Default; good balance in dense terrain*, replacing
+  *LCS Recommended*. It remains the default.
+- The country presets are gone from both console dropdowns, which now show the
+  same nine presets as the app, Short Turbo through Long Slow.
+
+**New message sound.** A short chime plays when a message arrives, generated in
+the browser so there is no audio file to ship or to be blocked from autoplaying.
+It is distinct from the call ringtone and fires once. Settings → Notifications has
+an on/off toggle and a test button.
+
+**Reset Identity**, at the end of Settings. Generates a new Reticulum identity,
+and with it a new LXMF address, after two confirmations. Nothing is deleted: the
+previous key is saved beside the new one as `identity.replaced-<timestamp>`, and
+because per-identity data lives under `identities/<identity_hash>/`, the old
+database stays where it is. Takes effect on restart.
+
+**Command Center PRO Client** added to Add LCS Interfaces, below LCS Gateway
+Client — a TCP client to `liberty.local:4246`, off by default.
+
+**Reticulum updated to 1.5.5.** The blackhole API is unchanged from 1.5.4 and
+every Reticulum call this app makes still resolves, so nothing else moves.
+
 ### What's new in v1.9.7
 
 - **Moved to its own repository.** LCS MeshChat now lives at

@@ -67,7 +67,7 @@ actually sending, so you can see the effect of a change rather than guess at it.
 |---|---|---|
 | Ethernet, Wi-Fi, TCP | Full duplex | Opus, any profile |
 | LoRa — Short Turbo, Short Fast | Full duplex | Codec2, mid-rate |
-| LoRa — Average, Medium Fast | Half duplex | Codec2, low rate |
+| LoRa — Short Slow, Medium Fast | Half duplex | Codec2, low rate |
 | LoRa — Long Fast and slower | Voice clips, not a live call | — |
 
 **Long Fast** (≈1.07 kbps) is the general-purpose LCS preset for text and is the

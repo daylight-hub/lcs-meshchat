@@ -51,18 +51,42 @@ microphone access in a secure context. That setup is in the Docker guide.
 
 ### Branding and navigation
 
-- Updated to the most recent RNS version 1.5.4, LXMF version 1.1.1, and LXST version 0.5.3.
+- Updated to the most recent RNS version 1.5.5, LXMF version 1.1.1, and LXST version 0.5.3.
 - **Add LCS Interfaces** — a header button opens a dialog to add LCS network
   interfaces to Reticulum. Choose which to add, whether to enable them immediately,
   and auto-detect a connected RNode's serial port:
   - **LCS Gateway Client** — (TCP, gateway mode)
+  - **Command Center PRO Client** — `liberty.local:4246` (TCP), off by default
   - **IP RNode** — `iprnode.local:4545` (TCP, network-attached RNode)
-  - **RNode LoRa** — direct serial LoRa radio (914.875 MHz), added disabled
+  - **RNode LoRa** — direct serial LoRa radio (914.875 MHz, 17 dBm), added disabled
     unless a serial port is provided.
 - **Restart button** (Docker builds only) — restarts the app process, relying on the
   container's `restart: unless-stopped` policy. Does not need the Docker socket.
 - **Incoming call ringtone added**
+- **New message sound** — a short chime when a message arrives, generated in the
+  browser rather than shipped as an audio file, and distinct from the call ringtone.
+  Toggle and test button under Settings → Notifications.
+- **Reset Identity** at the end of Settings — generates a new Reticulum identity and
+  LXMF address after two confirmations. Nothing is deleted: the previous key is kept
+  as `identity.replaced-<timestamp>` and the old database stays under its own
+  identity hash. Takes effect on restart.
 - **RNode management console** in tools
+
+### Radio settings
+
+- **Board-aware transmit power.** The RNode interface form has a Radio Board picker
+  that holds TX power at or below what that board's radio will accept — SX127x
+  17 dBm, SX1262 22, Heltec v4 28, SX1280 13, SX1280 with PA 20 — with a deliberate
+  override up to 30 dBm. This matters because the failure is silent: the firmware
+  clamps anything over the ceiling, Reticulum compares what it asked for against
+  what the radio reports back, rejects the mismatch, and the interface never comes
+  up. A LilyGo set to 20 dBm simply does not transmit. The form explains that where
+  you set the value.
+- **Presets set modem parameters only**, not transmit power, which belongs to the
+  board rather than to the channel. Nine presets from Short Turbo to Long Slow,
+  including **Long Range / Turbo** (SF11 / 500 kHz / CR 4:8), with **Long Fast** as
+  the default. The app's list and both Transport Console dropdowns are generated
+  from `src/frontend/js/rnode-presets.json`, so they cannot drift apart.
 
 ### Voice — [full guide](docs/VOICE.md)
 

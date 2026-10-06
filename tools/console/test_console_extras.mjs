@@ -14,6 +14,7 @@
 import { fileURLToPath } from "url";
 import path from "path";
 import { createRequire } from "module";
+import { readFileSync as fsReadFileSync } from "fs";
 
 // playwright may only be installed globally on a build box
 const require_ = createRequire(import.meta.url);
@@ -143,11 +144,41 @@ check("preset row is inside the radio field group",
     !!document.querySelector(".ns-sub-fields #lcs-preset-row")));
 
 const presetCount = await page.locator("#lcs-preset-row select option").count();
-check(`preset dropdown has all 13 presets (+placeholder) [${presetCount}]`, presetCount === 14);
+check(`preset dropdown has all 9 presets (+placeholder) [${presetCount}]`, presetCount === 10);
 
-check("'Average - Recommended for Speed' present",
-  await page.locator('#lcs-preset-row select option', {
-    hasText: "Average - Recommended for Speed" }).count() === 1);
+// the dropdown is generated from src/frontend/js/rnode-presets.json, so assert
+// against that file rather than against a list copied into the test
+const expected = JSON.parse(
+  fsReadFileSync(path.resolve(here, "../../src/frontend/js/rnode-presets.json"), "utf-8"));
+const optionText = await page.locator("#lcs-preset-row select option").allInnerTexts();
+check("every preset in rnode-presets.json appears, in order",
+  expected.every((pr, i) => (optionText[i + 1] || "").startsWith(pr.name)));
+
+check("'Short Slow' present (renamed from 'Average - Recommended for Speed')",
+  optionText.some((t) => t.startsWith("Short Slow")) &&
+  !optionText.some((t) => t.includes("Average - Recommended")));
+
+check("'Long Range / Turbo' sits between Medium Slow and Long Fast", (() => {
+  const i = optionText.findIndex((t) => t.startsWith("Long Range / Turbo"));
+  return i > 0
+    && optionText[i - 1].startsWith("Medium Slow")
+    && optionText[i + 1].startsWith("Long Fast");
+})());
+
+check("Short Slow, Medium Fast and Medium Slow carry the repeater note",
+  ["Short Slow", "Medium Fast", "Medium Slow"].every((name) => {
+    const t = optionText.find((x) => x.startsWith(name));
+    return !!t && t.includes("\u2605 good range and speed with high repeaters");
+  }));
+
+check("Long Fast carries the new default note and not 'LCS Recommended'", (() => {
+  const t = optionText.find((x) => x.startsWith("Long Fast"));
+  return !!t && t.includes("Default; good balance in dense terrain")
+      && !t.includes("LCS Recommended");
+})());
+
+check("no country presets in the dropdown",
+  !optionText.some((t) => /Norway|Brescia|Genova|EU country|US default/.test(t)));
 
 // ---- selecting a preset writes the fields ---------------------------------
 

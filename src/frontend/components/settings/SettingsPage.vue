@@ -56,6 +56,28 @@
                 </div>
             </div>
 
+            <!-- LCS: notifications -->
+            <div class="bg-white dark:bg-zinc-800 rounded shadow">
+                <div class="flex border-b border-gray-300 dark:border-zinc-700 text-gray-700 dark:text-gray-200 p-2 font-semibold">Notifications</div>
+                <div class="divide-y divide-gray-300 dark:divide-zinc-700 text-gray-900 dark:text-gray-100">
+
+                    <div class="p-2">
+                        <div class="flex items-start">
+                            <div class="flex items-center h-5">
+                                <input v-model="config.message_alert_enabled" @change="onMessageAlertEnabledChange" type="checkbox" class="w-4 h-4 border border-gray-300 dark:border-zinc-600 rounded bg-gray-50 dark:bg-zinc-700 focus:ring-3 focus:ring-blue-300 dark:focus:ring-blue-600">
+                            </div>
+                            <label class="ml-2 text-sm font-medium text-gray-900 dark:text-gray-100">New Message Sound</label>
+                        </div>
+                        <div class="text-sm text-gray-700 dark:text-gray-300">
+                            When enabled, a short chime plays when a message arrives. Incoming calls ring
+                            separately and are not affected by this.
+                            <button @click="testMessageAlert" type="button" class="ml-1 underline">Test sound</button>
+                        </div>
+                    </div>
+
+                </div>
+            </div>
+
             <!-- messages -->
             <div class="bg-white dark:bg-zinc-800 rounded shadow">
                 <div class="flex border-b border-gray-300 dark:border-zinc-700 text-gray-700 dark:text-gray-200 p-2 font-semibold">Messages</div>
@@ -173,6 +195,45 @@
                 </div>
             </div>
 
+            <!-- LCS: identity reset. Last on the page on purpose. -->
+            <div class="bg-white dark:bg-zinc-800 rounded shadow border border-red-300 dark:border-red-900">
+                <div class="flex border-b border-red-300 dark:border-red-900 text-red-700 dark:text-red-400 p-2 font-semibold">Reset Identity</div>
+                <div class="text-gray-900 dark:text-gray-100">
+
+                    <div class="p-2 space-y-2">
+                        <div class="text-sm text-gray-700 dark:text-gray-300">
+                            Generates a brand new Reticulum identity and LXMF address. Your current
+                            ones stop existing on the network.
+                        </div>
+                        <div class="text-sm rounded-md p-2 bg-red-50 text-red-800 dark:bg-red-950 dark:text-red-300">
+                            <b>This cannot be undone from inside the app.</b>
+                            <ul class="list-disc ml-5 mt-1 space-y-0.5">
+                                <li>Every contact who has you saved will no longer be able to reach you. They each have to add your new address.</li>
+                                <li>Your existing conversations stay on disk but become unreachable, because they belong to the old address.</li>
+                                <li>Any node that lists your identity hash as allowed for remote management will stop accepting you until you add the new hash over a cable.</li>
+                                <li>Your published blackhole list, if you serve one, changes address too.</li>
+                            </ul>
+                            <div class="mt-1">
+                                The old key is saved next to the new one as
+                                <span class="font-mono">identity.replaced-&lt;timestamp&gt;</span>, so you can put it
+                                back by hand if you need to.
+                            </div>
+                        </div>
+                        <div class="text-sm text-gray-700 dark:text-gray-300">
+                            Takes effect when LCS MeshChat restarts.
+                        </div>
+                        <div>
+                            <button @click="onResetIdentity" type="button" :disabled="isResettingIdentity"
+                                class="inline-flex items-center gap-x-1 rounded-md bg-red-600 px-3 py-2 text-sm font-semibold text-white shadow-sm hover:bg-red-500 disabled:opacity-50">
+                                <span v-if="isResettingIdentity">Resetting...</span>
+                                <span v-else>Reset Identity</span>
+                            </button>
+                        </div>
+                    </div>
+
+                </div>
+            </div>
+
         </div>
     </div>
 </template>
@@ -195,10 +256,12 @@ export default {
                 allow_auto_resending_failed_messages_with_attachments: null,
                 auto_send_failed_messages_to_propagation_node: null,
                 show_suggested_community_interfaces: null,
+                message_alert_enabled: null,
                 lxmf_local_propagation_node_enabled: null,
                 lxmf_preferred_propagation_node_destination_hash: null,
                 auto_select_propagation_node: null,
             },
+            isResettingIdentity: false,
         };
     },
     beforeUnmount() {
@@ -262,6 +325,44 @@ export default {
             await this.updateConfig({
                 "auto_send_failed_messages_to_propagation_node": this.config.auto_send_failed_messages_to_propagation_node,
             });
+        },
+        async onMessageAlertEnabledChange() {
+            await this.updateConfig({
+                "message_alert_enabled": this.config.message_alert_enabled,
+            });
+        },
+        testMessageAlert() {
+            // the alert itself lives in App.vue so it plays on any page
+            this.$root.playMessageAlert?.();
+        },
+        async onResetIdentity() {
+
+            // two steps on purpose: this is not recoverable from inside the app
+            if(!await DialogUtils.confirm("Generate a new Reticulum identity and LXMF address?\n\nEveryone who has you saved will no longer be able to reach you.")){
+                return;
+            }
+            if(!await DialogUtils.confirm("Last chance. Your current identity will be replaced when LCS MeshChat restarts.\n\nContinue?")){
+                return;
+            }
+
+            this.isResettingIdentity = true;
+            try {
+                const response = await window.axios.post("/api/v1/identity/reset", {
+                    confirm: true,
+                });
+                const data = response.data;
+                await DialogUtils.alert(
+                    "New identity: " + data.new_identity_hash
+                    + "\nPrevious: " + data.previous_identity_hash
+                    + (data.previous_identity_backup_path ? "\nOld key saved to: " + data.previous_identity_backup_path : "")
+                    + "\n\nRestart LCS MeshChat for this to take effect."
+                );
+            } catch(e) {
+                DialogUtils.alert(e?.response?.data?.message ?? "Failed to reset identity!");
+                console.log(e);
+            } finally {
+                this.isResettingIdentity = false;
+            }
         },
         async onShowSuggestedCommunityInterfacesChange() {
             await this.updateConfig({

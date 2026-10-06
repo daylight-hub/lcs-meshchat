@@ -4,5 +4,5 @@ lxmf==1.1.1
 lxst==0.5.3
 peewee>=3.18.1,<4.0.0
 pycparser==2.14
-rns==1.5.4
+rns==1.5.5
 websockets>=16.0

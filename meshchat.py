@@ -6,6 +6,7 @@ import base64
 import io
 import json
 import os
+import shutil
 import platform
 import sys
 import threading
@@ -56,7 +57,13 @@ def get_file_path(filename):
 
 class ReticulumMeshChat:
 
-    def __init__(self, identity: RNS.Identity, storage_dir, reticulum_config_dir):
+    def __init__(self, identity: RNS.Identity, storage_dir, reticulum_config_dir,
+                 identity_file_path=None):
+
+        # the file the running identity was loaded from, so it can be replaced by
+        # the identity reset. None when the identity came from --identity-base64,
+        # which has no file to rewrite.
+        self.identity_file_path = identity_file_path
 
         # when providing a custom storage_dir, files will be saved as
         # <storage_dir>/identities/<identity_hex>/
@@ -212,6 +219,24 @@ class ReticulumMeshChat:
                 interfaces[gateway_name]["enabled"] = enabled_value
                 updated.append(gateway_name)
 
+        # Command Center PRO Client
+        # Reticulum accepts either "interface_enabled" or "enabled" (Reticulum.py
+        # line 1104), and the sibling blocks here use "enabled", so the enable and
+        # disable toggle below works the same way for all of them.
+        command_center_name = "Command Center PRO Client"
+        if "command_center" in selected:
+            if command_center_name not in interfaces:
+                interfaces[command_center_name] = {
+                    "type": "TCPClientInterface",
+                    "enabled": enabled_value,
+                    "target_host": "liberty.local",
+                    "target_port": "4246",
+                }
+                added.append(command_center_name)
+            elif interfaces[command_center_name].get("enabled") != enabled_value:
+                interfaces[command_center_name]["enabled"] = enabled_value
+                updated.append(command_center_name)
+
         # LCS IP RNode TCP interface
         iprnode_name = "IP RNode"
         if "ip_rnode" in selected:
@@ -239,7 +264,10 @@ class ReticulumMeshChat:
                     "port": lora_port,
                     "frequency": "914875000",
                     "bandwidth": "250000",
-                    "txpower": "22",
+                    # 17 dBm, not 22: SX127x boards (LilyGo T-Beam, LoRa32 v2.1)
+                    # clamp anything higher, and Reticulum then rejects the
+                    # mismatch and refuses to bring the interface up at all.
+                    "txpower": "17",
                     "spreadingfactor": "11",
                     "codingrate": "5",
                 }
@@ -1718,6 +1746,79 @@ class ReticulumMeshChat:
                 "config": self.get_config_dict(),
             })
 
+        # LCS: replace the Reticulum identity with a freshly generated one.
+        #
+        # The LXMF address is derived from the same identity (it is registered on
+        # it by message_router.register_delivery_identity), so regenerating the
+        # Reticulum identity regenerates the LXMF address with it. There is no
+        # separate LXMF key to clear.
+        #
+        # Nothing is deleted. The previous identity is kept alongside the new one
+        # as identity.replaced-<timestamp>, and because per-identity data lives in
+        # <storage_dir>/identities/<identity_hash>/, the old database stays exactly
+        # where it is under the old hash. Restoring the saved file and restarting
+        # puts everything back.
+        #
+        # The running RNS instance, the LXMF router and every destination were all
+        # built from the old identity at startup, so this takes effect on restart
+        # rather than live. Rebuilding them in place would leave half-migrated
+        # destinations announcing under the wrong key.
+        @routes.post("/api/v1/identity/reset")
+        async def index(request):
+
+            if self.identity_file_path is None:
+                return web.json_response({
+                    "message": "This instance was started with --identity-base64, so there is no "
+                               "identity file to replace. Start it with --identity-file or let it "
+                               "use the default storage directory, then try again.",
+                }, status=409)
+
+            try:
+                data = await request.json()
+            except Exception:
+                data = {}
+
+            # the UI asks for explicit confirmation; require it on the wire too, so
+            # a stray POST cannot replace someone's identity
+            if data.get("confirm") is not True:
+                return web.json_response({
+                    "message": "Refusing to reset without confirmation.",
+                }, status=422)
+
+            previous_hash = self.identity.hash.hex()
+
+            try:
+                backup_path = "{}.replaced-{}".format(
+                    self.identity_file_path, int(time.time()),
+                )
+
+                # keep the old key before writing anything
+                if os.path.exists(self.identity_file_path):
+                    shutil.copy2(self.identity_file_path, backup_path)
+                else:
+                    backup_path = None
+
+                new_identity = RNS.Identity(create_keys=True)
+                with open(self.identity_file_path, "wb") as file:
+                    file.write(new_identity.get_private_key())
+
+            except Exception as e:
+                return web.json_response({
+                    "message": "Failed to write the new identity: {}".format(e),
+                }, status=500)
+
+            print("Reticulum Identity <{}> replaced with <{}>. Previous key saved to {}".format(
+                previous_hash, new_identity.hash.hex(), backup_path,
+            ))
+
+            return web.json_response({
+                "message": "Identity replaced. Restart LCS MeshChat for it to take effect.",
+                "previous_identity_hash": previous_hash,
+                "new_identity_hash": new_identity.hash.hex(),
+                "previous_identity_backup_path": backup_path,
+                "restart_required": True,
+            })
+
         # update config
         @routes.patch("/api/v1/config")
         async def index(request):
@@ -3059,6 +3160,10 @@ class ReticulumMeshChat:
             value = bool(data["show_suggested_community_interfaces"])
             self.config.show_suggested_community_interfaces.set(value)
 
+        if "message_alert_enabled" in data:
+            value = bool(data["message_alert_enabled"])
+            self.config.message_alert_enabled.set(value)
+
         if "lxmf_preferred_propagation_node_destination_hash" in data:
 
             # update config value
@@ -3320,6 +3425,7 @@ class ReticulumMeshChat:
             "auto_announce_interval_seconds": self.config.auto_announce_interval_seconds.get(),
             "last_announced_at": self.config.last_announced_at.get(),
             "theme": self.config.theme.get(),
+            "message_alert_enabled": self.config.message_alert_enabled.get(),
             "auto_resend_failed_messages_when_announce_received": self.config.auto_resend_failed_messages_when_announce_received.get(),
             "allow_auto_resending_failed_messages_with_attachments": self.config.allow_auto_resending_failed_messages_with_attachments.get(),
             "auto_send_failed_messages_to_propagation_node": self.config.auto_send_failed_messages_to_propagation_node.get(),
@@ -4393,6 +4499,7 @@ class Config:
     lxmf_user_icon_foreground_colour = StringConfig("lxmf_user_icon_foreground_colour", None)
     lxmf_user_icon_background_colour = StringConfig("lxmf_user_icon_background_colour", None)
     telephone_enabled = BoolConfig("telephone_enabled", True)
+    message_alert_enabled = BoolConfig("message_alert_enabled", True)
 
 # FIXME: we should probably set this as an instance variable of ReticulumMeshChat so it has a proper home, and pass it in to the constructor?
 nomadnet_cached_links = {}
@@ -4617,9 +4724,11 @@ def main():
         return
 
     # use provided identity, or fallback to a random one
+    identity_file_path = None
     if args.identity_file is not None:
         identity = RNS.Identity(create_keys=False)
         identity.load(args.identity_file)
+        identity_file_path = args.identity_file
         print("Reticulum Identity <{}> has been loaded from file {}.".format(identity.hash.hex(), args.identity_file))
     elif args.identity_base64 is not None:
         identity = RNS.Identity(create_keys=False)
@@ -4644,10 +4753,12 @@ def main():
         # default identity file exists, load it
         identity = RNS.Identity(create_keys=False)
         identity.load(default_identity_file)
+        identity_file_path = default_identity_file
         print("Reticulum Identity <{}> has been loaded from file {}.".format(identity.hash.hex(), default_identity_file))
 
     # init app
-    reticulum_meshchat = ReticulumMeshChat(identity, args.storage_dir, args.reticulum_config_dir)
+    reticulum_meshchat = ReticulumMeshChat(identity, args.storage_dir, args.reticulum_config_dir,
+                                          identity_file_path=identity_file_path)
     reticulum_meshchat.run(args.host, args.port, launch_browser=args.headless is False, rns_bridge_options={
         "enabled": args.disable_rns_bridge is False,
         "port": args.rns_bridge_port,

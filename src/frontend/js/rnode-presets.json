@@ -1,0 +1,92 @@
+[
+  {
+    "name": "Short Turbo",
+    "frequency": 914875000,
+    "bandwidth": 500000,
+    "spreadingfactor": 7,
+    "codingrate": 5,
+    "params": "SF7 / 500 kHz / CR 4:5",
+    "note": null,
+    "hint": "fastest, very short range"
+  },
+  {
+    "name": "Short Fast",
+    "frequency": 914875000,
+    "bandwidth": 250000,
+    "spreadingfactor": 7,
+    "codingrate": 5,
+    "params": "SF7 / 250 kHz / CR 4:5",
+    "note": "Best for voice over LoRa",
+    "hint": null
+  },
+  {
+    "name": "Short Slow",
+    "frequency": 914875000,
+    "bandwidth": 250000,
+    "spreadingfactor": 8,
+    "codingrate": 5,
+    "params": "SF8 / 250 kHz / CR 4:5",
+    "note": "good range and speed with high repeaters",
+    "hint": null
+  },
+  {
+    "name": "Medium Fast",
+    "frequency": 914875000,
+    "bandwidth": 250000,
+    "spreadingfactor": 9,
+    "codingrate": 5,
+    "params": "SF9 / 250 kHz / CR 4:5",
+    "note": "good range and speed with high repeaters",
+    "hint": null
+  },
+  {
+    "name": "Medium Slow",
+    "frequency": 914875000,
+    "bandwidth": 250000,
+    "spreadingfactor": 10,
+    "codingrate": 5,
+    "params": "SF10 / 250 kHz / CR 4:5",
+    "note": "good range and speed with high repeaters",
+    "hint": null
+  },
+  {
+    "name": "Long Range / Turbo",
+    "frequency": 914875000,
+    "bandwidth": 500000,
+    "spreadingfactor": 11,
+    "codingrate": 8,
+    "params": "SF11 / 500 kHz / CR 4:8",
+    "note": null,
+    "hint": "wide channel at high spreading factor"
+  },
+  {
+    "name": "Long Fast",
+    "frequency": 914875000,
+    "bandwidth": 250000,
+    "spreadingfactor": 11,
+    "codingrate": 5,
+    "params": "SF11 / 250 kHz / CR 4:5",
+    "note": "Default; good balance in dense terrain",
+    "hint": null
+  },
+  {
+    "name": "Long Moderate",
+    "frequency": 914875000,
+    "bandwidth": 125000,
+    "spreadingfactor": 11,
+    "codingrate": 8,
+    "params": "SF11 / 125 kHz / CR 4:8",
+    "note": null,
+    "hint": "better range, slower"
+  },
+  {
+    "name": "Long Slow",
+    "frequency": 914875000,
+    "bandwidth": 125000,
+    "spreadingfactor": 12,
+    "codingrate": 8,
+    "params": "SF12 / 125 kHz / CR 4:8",
+    "note": null,
+    "hint": "maximum range, slowest"
+  }
+]
