@@ -3,6 +3,51 @@
 Version history for LCS MeshChat. The release workflow reads the
 section matching the version being built and uses it as the release body.
 
+### What's new in v1.9.9
+
+**Path request on send failure.** Reticulum only learns a route when something asks
+for one or the peer announces, so a message that failed while its path was stale sat
+failed until that peer next announced. Now, when a send fails, LCS MeshChat asks the
+network where that destination is and resends if a path comes back. The request goes
+out even when a path is already known, because a stale entry is exactly the case
+this is for and the response refreshes it.
+
+It is throttled, because a resend creates fresh messages that can fail and call
+straight back in: at most one request per peer per minute, three per peer, and the
+budget resets after 30 minutes of quiet. A successful delivery or an incoming
+announce from that peer clears the count immediately. Messages are never stranded by
+the cap — the existing resend-on-announce still applies. Settings → Messages has a
+toggle, and the throttling and ordering have their own test suite
+(`tools/tests/test_path_request_throttle.py`, 36 checks).
+
+**Propagation stays the fallback it is meant to be.** The path request is tried
+first, because direct delivery beats leaving a message on a third party's node. If a
+route comes back the message is retried on it — the same message, re-sent rather than
+copied, so nothing is duplicated and `try_propagation_on_fail` survives: should the
+retry fail too, propagation still happens. If no route comes back, or the throttle
+has already spent its attempts, the message goes to propagation immediately. With
+path requests turned off, behaviour is exactly as it was before.
+
+One unreachable peer fails every message queued for it, one callback each. Those are
+collected per destination and resolved together by a single path request, so the
+network is asked once and no message is either sent twice or quietly dropped.
+
+**Reaching the propagation node is LXMF's job, and it already does it.** If a
+propagated message fails because the propagation node itself is unreachable, LXMF
+requests a path to that node and retries — five attempts, seven seconds apart
+(`LXMRouter.process_outbound`). So a message that has already gone to propagation is
+left alone here: asking for a path to the *recipient* at that point would be aimed at
+the wrong destination, and retrying would only repeat the propagation attempt.
+
+**Path Request button** in each conversation, beside the peer's identity at the top.
+Asks the network for a route to that peer on demand and reports what came back —
+hop count and interface, or that nothing answered. Useful before sending something
+large, or when the header shows a hop count but messages are failing anyway.
+
+`GET /api/v1/destination/<hash>/path` gained `force=true`, which issues the request
+even when a path is already known, and now reports `path_was_known` and
+`path_was_requested` so a caller can tell what actually happened.
+
 ### What's new in v1.9.8
 
 **Transmit power now matches what the board can actually do.** Setting 20 dBm on a

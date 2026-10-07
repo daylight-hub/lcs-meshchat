@@ -113,6 +113,24 @@
                         <div class="text-sm text-gray-700 dark:text-gray-300">When enabled, messages that fail to send will be sent to the configured propagation node.</div>
                     </div>
 
+                    <div class="p-2">
+                        <div class="flex items-start">
+                            <div class="flex items-center h-5">
+                                <input v-model="config.path_request_on_send_failure_enabled" @change="onPathRequestOnSendFailureEnabledChange" type="checkbox" class="w-4 h-4 border border-gray-300 dark:border-zinc-600 rounded bg-gray-50 dark:bg-zinc-700 focus:ring-3 focus:ring-blue-300 dark:focus:ring-blue-600">
+                            </div>
+                            <label class="ml-2 text-sm font-medium text-gray-900 dark:text-gray-100">Path request on send failure</label>
+                        </div>
+                        <div class="text-sm text-gray-700 dark:text-gray-300">
+                            When a message fails to send, ask the network for a route to that peer
+                            and retry on it. Reticulum only learns a new route when something asks or
+                            the peer announces, so without this a message that failed on a stale path
+                            waits for the peer's next announce. Tried before the propagation node
+                            above, because direct delivery is better when it is reachable; if no route
+                            comes back, the message falls through to propagation as usual. Limited to
+                            3 attempts per peer, at most one a minute.
+                        </div>
+                    </div>
+
                 </div>
             </div>
 
@@ -257,6 +275,7 @@ export default {
                 auto_send_failed_messages_to_propagation_node: null,
                 show_suggested_community_interfaces: null,
                 message_alert_enabled: null,
+                path_request_on_send_failure_enabled: null,
                 lxmf_local_propagation_node_enabled: null,
                 lxmf_preferred_propagation_node_destination_hash: null,
                 auto_select_propagation_node: null,
@@ -324,6 +343,11 @@ export default {
         async onAutoSendFailedMessagesToPropagationNodeChange() {
             await this.updateConfig({
                 "auto_send_failed_messages_to_propagation_node": this.config.auto_send_failed_messages_to_propagation_node,
+            });
+        },
+        async onPathRequestOnSendFailureEnabledChange() {
+            await this.updateConfig({
+                "path_request_on_send_failure_enabled": this.config.path_request_on_send_failure_enabled,
             });
         },
         async onMessageAlertEnabledChange() {

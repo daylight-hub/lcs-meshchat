@@ -124,6 +124,22 @@ remote management differ only in which transport you pick.
 - **Setup Remote Management** — selecting the LCS MeshChat transport explains the one-time usb-c wire step of adding your Identity Hash (not LXMF address) to the node's remote-management allow list.
 - **Network Visualizer** will show the microReticulum node. This is **not** the address to enter in the transport console. Click on the node to open its nomadnet page. You may have to click the button to identify yourself(the fingerprint button). Then click **General**. Copy the management destination listed and paste over in the transport console **destination hash** box. click **connect**.
 
+### Routing and delivery
+
+- **Path request on send failure.** Reticulum only learns a route when something
+  asks for one or the peer announces, so a message that failed on a stale path used
+  to sit failed until that peer announced again. A failed send now asks the network
+  where the destination is and retries on the route that comes back. Tried *before*
+  the propagation node, since direct delivery beats leaving a message on a third
+  party's node — and if no route comes back the message falls through to propagation
+  as before. Throttled to one request per peer per minute and three per peer,
+  resetting after 30 minutes of quiet; a delivery or an announce from that peer
+  clears the count. Toggle under Settings → Messages.
+- **Path Request button** in each conversation, beside the peer's identity. Asks for
+  a route on demand and reports the hop count and interface, or that nothing
+  answered. Forces the request even when a path is already known, which is the case
+  where the header shows hops but messages still fail.
+
 ### Blackhole management
 
 - **Block Contact** in a conversation's three-dot menu, blocks permanently until removed.

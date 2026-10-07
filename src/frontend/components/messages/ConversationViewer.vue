@@ -61,8 +61,20 @@
                 </div>
             </div>
 
+            <!-- LCS: ask the network for a fresh route to this peer -->
+            <div class="ml-auto my-auto mr-1">
+                <IconButton @click="requestPath" :title="isRequestingPath ? 'Requesting path...' : 'Path Request — ask the network for a route to this peer'">
+                    <svg v-if="!isRequestingPath" xmlns="http://www.w3.org/2000/svg" fill="none" viewBox="0 0 24 24" stroke-width="1.5" stroke="currentColor" class="w-5 h-5">
+                        <path stroke-linecap="round" stroke-linejoin="round" d="M6 12 3.269 3.125A59.769 59.769 0 0 1 21.485 12 59.768 59.768 0 0 1 3.27 20.875L5.999 12Zm0 0h7.5"/>
+                    </svg>
+                    <svg v-else xmlns="http://www.w3.org/2000/svg" fill="none" viewBox="0 0 24 24" stroke-width="1.5" stroke="currentColor" class="w-5 h-5 animate-spin">
+                        <path stroke-linecap="round" stroke-linejoin="round" d="M16.023 9.348h4.992v-.001M2.985 19.644v-4.992m0 0h4.992m-4.993 0 3.181 3.183a8.25 8.25 0 0 0 13.803-3.7M4.031 9.865a8.25 8.25 0 0 1 13.803-3.7l3.181 3.182m0-4.991v4.99"/>
+                    </svg>
+                </IconButton>
+            </div>
+
             <!-- dropdown menu -->
-            <div class="ml-auto my-auto mx-2">
+            <div class="my-auto mx-2">
                 <ConversationDropDownMenu
                     v-if="selectedPeer"
                     :peer="selectedPeer"
@@ -429,6 +441,7 @@ export default {
         return {
 
             selectedPeerPath: null,
+            isRequestingPath: false,
             selectedPeerLxmfStampInfo: null,
             selectedPeerSignalMetrics: null,
 
@@ -677,6 +690,44 @@ export default {
                 this.chatItems = this.chatItems.filter((item) => {
                     return item.lxmf_message?.hash !== hash;
                 });
+            }
+        },
+        // LCS: ask the network where this peer is now. force=true so it asks even
+        // when a path is already known -- a stale entry is the usual reason sending
+        // fails while the header still shows a hop count.
+        async requestPath() {
+
+            if(this.isRequestingPath || !this.selectedPeer){
+                return;
+            }
+
+            this.isRequestingPath = true;
+            try {
+
+                const response = await window.axios.get(
+                    `/api/v1/destination/${this.selectedPeer.destination_hash}/path`,
+                    { params: { request: true, force: true, timeout: 15 } },
+                );
+
+                const path = response.data.path;
+                this.selectedPeerPath = path ?? null;
+
+                if(path){
+                    const hops = path.hops === 0 || path.hops === 1
+                        ? "direct"
+                        : `${path.hops} hops away`;
+                    DialogUtils.alert(`Path found: ${hops}`
+                        + (path.next_hop_interface ? `\nVia ${path.next_hop_interface}` : ""));
+                } else {
+                    DialogUtils.alert("No path to this peer. Nothing on the network answered the request."
+                        + "\n\nThey may be offline, or out of reach of any transport node you can see.");
+                }
+
+            } catch(e) {
+                console.log(e);
+                DialogUtils.alert("Path request failed.");
+            } finally {
+                this.isRequestingPath = false;
             }
         },
         async getPeerPath() {

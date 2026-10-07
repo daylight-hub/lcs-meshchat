@@ -60,6 +60,20 @@ class ReticulumMeshChat:
     def __init__(self, identity: RNS.Identity, storage_dir, reticulum_config_dir,
                  identity_file_path=None):
 
+        # LCS: path-request-on-send-failure bookkeeping, keyed by destination hash.
+        # Each entry is {"at": <unix seconds of last attempt>, "count": <attempts>}.
+        # A resend creates fresh messages, which can fail again and call straight
+        # back into here, so both a cooldown and an attempt cap are required or
+        # one unreachable peer would spin indefinitely.
+        self.path_request_attempts = {}
+
+        # Failed messages waiting on the outcome of a path request, keyed by
+        # destination hash, plus the destinations currently being asked about. One
+        # unreachable peer fails every queued message for it, and all of those must
+        # be resolved by a single request rather than each triggering its own.
+        self.pending_path_requests = {}
+        self.path_requests_in_flight = set()
+
         # the file the running identity was loaded from, so it can be replaced by
         # the identity reset. None when the identity came from --identity-base64,
         # which has no file to rewrite.
@@ -2298,24 +2312,42 @@ class ReticulumMeshChat:
             # check if user wants to request the path from the network right now
             request_query_param = request.query.get("request", "false")
             should_request_now = request_query_param == "true" or request_query_param == "1"
-            if should_request_now:
+
+            # LCS: force=true asks even when a path is already known. A known but
+            # stale entry is the usual reason sending fails while the UI still shows
+            # a hop count, and the response to the request refreshes it.
+            force_query_param = request.query.get("force", "false")
+            should_force = force_query_param == "true" or force_query_param == "1"
+
+            path_was_known = RNS.Transport.has_path(destination_hash)
+            path_was_requested = False
+
+            if should_request_now or should_force:
 
                 # determine how long we should wait for a path response
                 timeout_seconds = int(request.query.get("timeout", 15))
                 timeout_after_seconds = time.time() + timeout_seconds
 
-                # request path if we don't have it
-                if not RNS.Transport.has_path(destination_hash):
+                # request path if we don't have it, or if asked to regardless
+                if should_force or not path_was_known:
                     RNS.Transport.request_path(destination_hash)
+                    path_was_requested = True
 
-                # wait until we have a path, or give up after the configured timeout
-                while not RNS.Transport.has_path(destination_hash) and time.time() < timeout_after_seconds:
-                    await asyncio.sleep(0.1)
+                if path_was_known and should_force:
+                    # nothing will flip from false to true, so just give the
+                    # response time to arrive rather than polling for a change
+                    await asyncio.sleep(min(2, timeout_seconds))
+                else:
+                    # wait until we have a path, or give up after the configured timeout
+                    while not RNS.Transport.has_path(destination_hash) and time.time() < timeout_after_seconds:
+                        await asyncio.sleep(0.1)
 
             # ensure path is known
             if not RNS.Transport.has_path(destination_hash):
                 return web.json_response({
                     "path": None,
+                    "path_was_known": path_was_known,
+                    "path_was_requested": path_was_requested,
                 })
 
             # determine next hop and hop count
@@ -2326,6 +2358,8 @@ class ReticulumMeshChat:
             if next_hop_bytes is None:
                 return web.json_response({
                     "path": None,
+                    "path_was_known": path_was_known,
+                    "path_was_requested": path_was_requested,
                 })
 
             next_hop = next_hop_bytes.hex()
@@ -2337,6 +2371,8 @@ class ReticulumMeshChat:
                     "next_hop": next_hop,
                     "next_hop_interface": next_hop_interface,
                 },
+                "path_was_known": path_was_known,
+                "path_was_requested": path_was_requested,
             })
 
         # drop path to destination
@@ -3164,6 +3200,10 @@ class ReticulumMeshChat:
             value = bool(data["message_alert_enabled"])
             self.config.message_alert_enabled.set(value)
 
+        if "path_request_on_send_failure_enabled" in data:
+            value = bool(data["path_request_on_send_failure_enabled"])
+            self.config.path_request_on_send_failure_enabled.set(value)
+
         if "lxmf_preferred_propagation_node_destination_hash" in data:
 
             # update config value
@@ -3426,6 +3466,7 @@ class ReticulumMeshChat:
             "last_announced_at": self.config.last_announced_at.get(),
             "theme": self.config.theme.get(),
             "message_alert_enabled": self.config.message_alert_enabled.get(),
+            "path_request_on_send_failure_enabled": self.config.path_request_on_send_failure_enabled.get(),
             "auto_resend_failed_messages_when_announce_received": self.config.auto_resend_failed_messages_when_announce_received.get(),
             "allow_auto_resending_failed_messages_with_attachments": self.config.allow_auto_resending_failed_messages_with_attachments.get(),
             "auto_send_failed_messages_to_propagation_node": self.config.auto_send_failed_messages_to_propagation_node.get(),
@@ -3782,6 +3823,11 @@ class ReticulumMeshChat:
     # handle delivery status update for an outbound lxmf message
     def on_lxmf_sending_state_updated(self, lxmf_message):
 
+        # LCS: this destination is reachable again, so give it a fresh set of
+        # path-request attempts next time it breaks
+        if lxmf_message.state in [LXMF.LXMessage.DELIVERED, LXMF.LXMessage.SENT]:
+            self.clear_path_request_attempts(lxmf_message.destination_hash.hex())
+
         # upsert lxmf message to database
         self.db_upsert_lxmf_message(lxmf_message)
 
@@ -3794,12 +3840,188 @@ class ReticulumMeshChat:
     # handle delivery failed for an outbound lxmf message
     def on_lxmf_sending_failed(self, lxmf_message):
 
-        # check if this failed message should fall back to sending via a propagation node
-        if lxmf_message.state == LXMF.LXMessage.FAILED and hasattr(lxmf_message, "try_propagation_on_fail") and lxmf_message.try_propagation_on_fail:
-            self.send_failed_message_via_propagation_node(lxmf_message)
+        if lxmf_message.state == LXMF.LXMessage.FAILED:
+
+            # does this message have a propagation node to fall back to
+            wants_propagation = bool(getattr(lxmf_message, "try_propagation_on_fail", False))
+
+            # LCS: a propagated message that failed did so because the propagation
+            # node could not be reached, not the recipient, and LXMF already
+            # requests a path to its own propagation node and retries
+            # (LXMRouter.process_outbound, MAX_DELIVERY_ATTEMPTS attempts spaced by
+            # PATH_REQUEST_WAIT). Asking for a path to the recipient here would be
+            # aimed at the wrong destination, and retrying would only repeat the
+            # propagation attempt, since the delivery method is unchanged.
+            already_propagated = getattr(lxmf_message, "desired_method", None) == LXMF.LXMessage.PROPAGATED
+
+            # LCS: try to recover a direct route first. Direct delivery is better
+            # than propagation when it is achievable -- lower latency, and the
+            # message is not left sitting on a third party's node -- so propagation
+            # is kept as the fallback it is meant to be.
+            #
+            # Reticulum only learns a route when something asks or the peer
+            # announces, so without this a message that failed on a stale path sits
+            # failed until that peer announces again.
+            if self.config.path_request_on_send_failure_enabled.get() and not already_propagated:
+                self.queue_failed_message_for_path_request(lxmf_message, wants_propagation)
+
+            # path requests turned off, so behave as before
+            elif wants_propagation:
+                self.send_failed_message_via_propagation_node(lxmf_message)
 
         # update state
         self.on_lxmf_sending_state_updated(lxmf_message)
+
+    # LCS: how hard to try recovering a route after a send failure.
+    PATH_REQUEST_COOLDOWN_SECONDS = 60      # minimum gap between attempts per destination
+    PATH_REQUEST_MAX_ATTEMPTS = 3           # attempts before leaving it to an announce
+    PATH_REQUEST_TIMEOUT_SECONDS = 15       # how long to wait for a path response
+    PATH_REQUEST_RESET_SECONDS = 1800       # quiet period after which the count restarts
+    PATH_REQUEST_MAX_PENDING = 100          # per destination, so a backlog cannot grow without bound
+
+    # LCS: decide whether a destination is due another path request.
+    #
+    # Pure and side effect free so it can be tested directly -- getting this wrong
+    # either strands failed messages or floods a slow link, and a resend produces
+    # one failure callback per message, so the throttling has to hold.
+    #
+    # Returns (allowed, attempt), where attempt is the record to store when allowed.
+    @classmethod
+    def next_path_request_attempt(cls, attempt, now):
+
+        attempt = attempt or {"at": 0, "count": 0}
+
+        # a long quiet spell means whatever went wrong before is not what is going
+        # wrong now, so start counting again
+        if now - attempt["at"] > cls.PATH_REQUEST_RESET_SECONDS:
+            attempt = {"at": 0, "count": 0}
+
+        # one resend produces several failures in a row, one per message; only the
+        # first should reach the network
+        if now - attempt["at"] < cls.PATH_REQUEST_COOLDOWN_SECONDS:
+            return False, attempt
+
+        # stop asking. An incoming announce still triggers the existing resend, so
+        # the messages are not stranded, they just stop costing airtime.
+        if attempt["count"] >= cls.PATH_REQUEST_MAX_ATTEMPTS:
+            return False, attempt
+
+        return True, {"at": now, "count": attempt["count"] + 1}
+
+    # LCS: hold a failed message until we know whether a route can be recovered.
+    #
+    # A single destination going unreachable fails every queued message for it, one
+    # callback each. They are collected per destination and resolved together by one
+    # path request, so the network is asked once and no message is either sent twice
+    # or dropped.
+    def queue_failed_message_for_path_request(self, lxmf_message, wants_propagation: bool):
+
+        destination_hash = lxmf_message.destination_hash.hex()
+        pending = self.pending_path_requests.setdefault(destination_hash, [])
+
+        if len(pending) < self.PATH_REQUEST_MAX_PENDING:
+            pending.append((lxmf_message, wants_propagation))
+        elif wants_propagation:
+            # the queue is full, so this one goes straight to its fallback rather
+            # than being silently forgotten
+            self.send_failed_message_via_propagation_node(lxmf_message)
+            return
+
+        # a request for this destination is already in flight; its result will
+        # resolve everything queued above
+        if destination_hash in self.path_requests_in_flight:
+            return
+
+        now = time.time()
+        allowed, attempt = self.next_path_request_attempt(
+            self.path_request_attempts.get(destination_hash), now,
+        )
+
+        if not allowed:
+            # not asking again yet, so resolve what is queued using the fallback
+            self.resolve_pending_path_request(destination_hash, path_found=False)
+            return
+
+        self.path_request_attempts[destination_hash] = attempt
+        self.path_requests_in_flight.add(destination_hash)
+        AsyncUtils.run_async(self.request_path_for_failed_messages(destination_hash, attempt))
+
+    # LCS: ask the network for a route to a destination whose sends just failed,
+    # then resolve everything queued for it.
+    async def request_path_for_failed_messages(self, destination_hash: str, attempt: dict):
+
+        path_found = False
+        try:
+            raw_destination_hash = bytes.fromhex(destination_hash)
+
+            # Asked for unconditionally, including when a path is already known: a
+            # known-but-stale entry is exactly the case this is here to fix, and the
+            # response refreshes it.
+            RNS.Transport.request_path(raw_destination_hash)
+            print("Requesting path to {} after a send failure (attempt {} of {})".format(
+                destination_hash, attempt["count"], self.PATH_REQUEST_MAX_ATTEMPTS,
+            ))
+
+            timeout_after_seconds = time.time() + self.PATH_REQUEST_TIMEOUT_SECONDS
+            while not RNS.Transport.has_path(raw_destination_hash) and time.time() < timeout_after_seconds:
+                await asyncio.sleep(0.25)
+
+            path_found = RNS.Transport.has_path(raw_destination_hash)
+            if path_found:
+                # give the refreshed entry a moment to settle before using it
+                await asyncio.sleep(0.5)
+                print("Path to {} found, retrying failed messages".format(destination_hash))
+            else:
+                print("No path to {} after the request timed out".format(destination_hash))
+
+        except Exception as e:
+            # never leave messages stuck in the pending queue on an error
+            print("request_path_for_failed_messages error: {}".format(e))
+
+        finally:
+            self.path_requests_in_flight.discard(destination_hash)
+            try:
+                self.resolve_pending_path_request(destination_hash, path_found=path_found)
+            except Exception as e:
+                print("resolve_pending_path_request error: {}".format(e))
+
+    # LCS: act on the messages queued against a destination.
+    #
+    # Path found: retry each one on the refreshed route. The same message object is
+    # re-sent rather than a copy, so nothing is duplicated, the UI updates in place,
+    # and try_propagation_on_fail survives -- if the retry fails too, propagation
+    # still happens, which is the whole point of trying direct first.
+    #
+    # No path: hand each message to its propagation fallback, where it has one.
+    def resolve_pending_path_request(self, destination_hash: str, path_found: bool):
+
+        pending = self.pending_path_requests.pop(destination_hash, [])
+
+        for lxmf_message, wants_propagation in pending:
+            try:
+                if path_found:
+                    self.retry_failed_message(lxmf_message)
+                elif wants_propagation:
+                    self.send_failed_message_via_propagation_node(lxmf_message)
+            except Exception as e:
+                print("failed to resolve message for {}: {}".format(destination_hash, e))
+
+    # LCS: send a failed message again over whatever route it was using, on the
+    # assumption that the route has just changed. Same reset as the propagation
+    # fallback does, without changing the delivery method.
+    def retry_failed_message(self, lxmf_message: LXMF.LXMessage):
+
+        lxmf_message.packed = None
+        lxmf_message.delivery_attempts = 0
+        if hasattr(lxmf_message, "next_delivery_attempt"):
+            del lxmf_message.next_delivery_attempt
+
+        self.message_router.handle_outbound(lxmf_message)
+
+    # LCS: a destination that is reachable again should get a fresh set of attempts
+    # the next time it breaks.
+    def clear_path_request_attempts(self, destination_hash: str):
+        self.path_request_attempts.pop(destination_hash, None)
 
     # sends a previously failed message via a propagation node
     def send_failed_message_via_propagation_node(self, lxmf_message: LXMF.LXMessage):
@@ -4121,6 +4343,9 @@ class ReticulumMeshChat:
             "type": "announce",
             "announce": self.convert_db_announce_to_dict(announce),
         })))
+
+        # LCS: the peer is clearly reachable, so stop rationing path requests to it
+        self.clear_path_request_attempts(destination_hash.hex())
 
         # resend all failed messages that were intended for this destination
         if self.config.auto_resend_failed_messages_when_announce_received.get():
@@ -4500,6 +4725,7 @@ class Config:
     lxmf_user_icon_background_colour = StringConfig("lxmf_user_icon_background_colour", None)
     telephone_enabled = BoolConfig("telephone_enabled", True)
     message_alert_enabled = BoolConfig("message_alert_enabled", True)
+    path_request_on_send_failure_enabled = BoolConfig("path_request_on_send_failure_enabled", True)
 
 # FIXME: we should probably set this as an instance variable of ReticulumMeshChat so it has a proper home, and pass it in to the constructor?
 nomadnet_cached_links = {}
