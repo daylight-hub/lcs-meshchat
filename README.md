@@ -135,6 +135,12 @@ remote management differ only in which transport you pick.
   as before. Throttled to one request per peer per minute and three per peer,
   resetting after 30 minutes of quiet; a delivery or an announce from that peer
   clears the count. Toggle under Settings → Messages.
+- **AutoInterface recovers by itself.** AutoInterface enumerates network interfaces
+  and joins its discovery multicast group only in its constructor, so an interface
+  plugged in after launch is never used, and a link that drops and returns never
+  rejoins the group — it reports *Carrier lost* and stays that way. Both are watched
+  for and fixed by reloading that one interface, which rebuilds it in place. Requires
+  the problem to persist, rate limited, and never interrupts a call.
 - **Request paths on startup.** Reticulum saves its path table on exit but only
   reloads it when transport mode is on, so a client restart otherwise begins with no
   paths and waits for each peer to announce. A route is requested for the 20 most

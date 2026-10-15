@@ -83,6 +83,10 @@ class ReticulumMeshChat:
         # tracked with a flag rather than a task handle
         self.path_persist_pending = False
 
+        # LCS: AutoInterface recovery bookkeeping. Keyed by interface name:
+        # {"strikes": <consecutive bad checks>, "reloads": [<unix times>]}
+        self.autointerface_state = {}
+
         # the file the running identity was loaded from, so it can be replaced by
         # the identity reset. None when the identity came from --identity-base64,
         # which has no file to rewrite.
@@ -2954,6 +2958,12 @@ class ReticulumMeshChat:
             # matter rather than waiting for each peer to announce.
             AsyncUtils.run_async(self.warm_paths_for_known_peers())
 
+            # LCS: AutoInterface only enumerates interfaces and joins its multicast
+            # group in its constructor, so an interface that appears later is never
+            # used and a dropped-then-restored link never rejoins. Watch for both
+            # and reload the interface to rebuild it.
+            AsyncUtils.run_async(self.monitor_autointerfaces())
+
             # auto launch web browser
             if launch_browser:
                 try:
@@ -3226,6 +3236,10 @@ class ReticulumMeshChat:
             value = bool(data["persist_paths_on_discovery_enabled"])
             self.config.persist_paths_on_discovery_enabled.set(value)
 
+        if "autointerface_recovery_enabled" in data:
+            value = bool(data["autointerface_recovery_enabled"])
+            self.config.autointerface_recovery_enabled.set(value)
+
         if "lxmf_preferred_propagation_node_destination_hash" in data:
 
             # update config value
@@ -3491,6 +3505,7 @@ class ReticulumMeshChat:
             "path_request_on_send_failure_enabled": self.config.path_request_on_send_failure_enabled.get(),
             "path_warm_on_startup_enabled": self.config.path_warm_on_startup_enabled.get(),
             "persist_paths_on_discovery_enabled": self.config.persist_paths_on_discovery_enabled.get(),
+            "autointerface_recovery_enabled": self.config.autointerface_recovery_enabled.get(),
             "auto_resend_failed_messages_when_announce_received": self.config.auto_resend_failed_messages_when_announce_received.get(),
             "allow_auto_resending_failed_messages_with_attachments": self.config.allow_auto_resending_failed_messages_with_attachments.get(),
             "auto_send_failed_messages_to_propagation_node": self.config.auto_send_failed_messages_to_propagation_node.get(),
@@ -4167,6 +4182,196 @@ class ReticulumMeshChat:
 
         except Exception as e:
             print("schedule_path_table_persist error: {}".format(e))
+
+    # ------------------------------------------------------------------
+    # LCS: AutoInterface recovery
+    #
+    # AutoInterface builds everything it needs in __init__ and never rebuilds it:
+    # it enumerates the system's interfaces once, and it joins the discovery
+    # multicast group once (IPV6_JOIN_GROUP, in the constructor). Two consequences,
+    # both of which look like "MeshChat needs restarting":
+    #
+    #   1. An interface that appears later -- plugging ethernet in after launch --
+    #      is never adopted. peer_jobs only iterates adopted_interfaces, so it is
+    #      never picked up.
+    #
+    #   2. If a link drops and returns, the kernel drops the socket's multicast
+    #      group membership. The link-local address is usually derived from the MAC
+    #      and so comes back unchanged, which means peer_jobs' address-change branch
+    #      never fires and the socket is never recreated. Nothing rejoins the group,
+    #      so multicast echoes stop forever: "Multicast echo timeout. Carrier lost."
+    #      and it never recovers.
+    #
+    # Reticulum cannot be restarted in-process -- Reticulum.__init__ raises
+    # OSError("Attempt to reinitialise Reticulum, when it was already running") and
+    # the singleton is never cleared. But reload_interface() is supported, and it
+    # detaches and re-attaches one interface, re-synthesising it from config. That
+    # re-runs __init__, which re-enumerates interfaces and rejoins the multicast
+    # group, fixing both cases.
+    #
+    # A reload drops peers and links on that interface, so it is deliberately
+    # reluctant: a problem has to persist across consecutive checks, reloads are
+    # rate limited and capped per hour, and an active call blocks one outright.
+    # ------------------------------------------------------------------
+    AUTOINTERFACE_CHECK_INTERVAL_SECONDS = 30   # how often to look
+    AUTOINTERFACE_STRIKES_BEFORE_RELOAD  = 2    # consecutive bad checks required
+    AUTOINTERFACE_RELOAD_COOLDOWN_SECONDS = 300 # minimum gap between reloads
+    AUTOINTERFACE_MAX_RELOADS_PER_HOUR   = 4    # ceiling, so a flapping link cannot thrash
+
+    # LCS: the live AutoInterface instances, found by class name so this does not
+    # depend on importing from RNS.Interfaces.
+    def find_autointerfaces(self):
+        found = []
+        try:
+            for interface in list(RNS.Transport.interfaces):
+                if type(interface).__name__ != "AutoInterface":
+                    continue
+                if getattr(interface, "detached", False):
+                    continue
+                found.append(interface)
+        except Exception as e:
+            print("could not enumerate AutoInterfaces: {}".format(e))
+        return found
+
+    # LCS: system interfaces that have a link-local address and that this
+    # AutoInterface would be willing to use, mirroring the filtering its own
+    # constructor applies.
+    def usable_link_local_interfaces(self, autointerface):
+
+        usable = set()
+        try:
+            netinfo = autointerface.netinfo
+            ignore = set(getattr(type(autointerface), "ALL_IGNORE_IFS", []) or [])
+            ignore |= set(getattr(autointerface, "ignored_interfaces", []) or [])
+            allowed = set(getattr(autointerface, "allowed_interfaces", []) or [])
+
+            if RNS.vendor.platformutils.is_darwin():
+                ignore |= set(getattr(type(autointerface), "DARWIN_IGNORE_IFS", []) or [])
+                ignore.add("lo0")
+            if RNS.vendor.platformutils.is_android():
+                ignore |= set(getattr(type(autointerface), "ANDROID_IGNORE_IFS", []) or [])
+
+            for ifname in netinfo.interfaces():
+                if ifname in ignore and ifname not in allowed:
+                    continue
+                if len(allowed) > 0 and ifname not in allowed:
+                    continue
+                addresses = netinfo.ifaddresses(ifname)
+                if netinfo.AF_INET6 not in addresses:
+                    continue
+                for address in addresses[netinfo.AF_INET6]:
+                    if str(address.get("addr", "")).startswith("fe80:"):
+                        usable.add(ifname)
+                        break
+
+        except Exception as e:
+            print("could not list link-local interfaces: {}".format(e))
+
+        return usable
+
+    # LCS: why this AutoInterface needs rebuilding, or None if it is healthy.
+    def autointerface_problem(self, autointerface):
+
+        adopted = set((getattr(autointerface, "adopted_interfaces", None) or {}).keys())
+
+        # case 1: something usable turned up that was never adopted
+        usable = self.usable_link_local_interfaces(autointerface)
+        unadopted = usable - adopted
+        if len(unadopted) > 0:
+            return "not using {}".format(", ".join(sorted(unadopted)))
+
+        # case 2: every adopted interface has lost its multicast echo. Partial loss
+        # is left alone, since the remaining interfaces are still carrying traffic
+        # and a reload would interrupt them too.
+        timed_out = getattr(autointerface, "timed_out_interfaces", None) or {}
+        if len(adopted) > 0:
+            stale = [name for name in adopted if timed_out.get(name) is True]
+            if len(stale) == len(adopted):
+                return "carrier lost on {}".format(", ".join(sorted(stale)))
+
+        return None
+
+    # LCS: is a reload allowed right now
+    def may_reload_autointerface(self, name: str, now: float):
+
+        state = self.autointerface_state.setdefault(name, {"strikes": 0, "reloads": []})
+
+        # never interrupt a call for this
+        try:
+            if self.telephone is not None and self.telephone.active_call is not None:
+                return False, "a call is in progress"
+        except Exception:
+            pass
+
+        state["reloads"] = [t for t in state["reloads"] if now - t < 3600]
+
+        if len(state["reloads"]) >= self.AUTOINTERFACE_MAX_RELOADS_PER_HOUR:
+            return False, "already reloaded {} times in the last hour".format(len(state["reloads"]))
+
+        if len(state["reloads"]) > 0 and now - state["reloads"][-1] < self.AUTOINTERFACE_RELOAD_COOLDOWN_SECONDS:
+            return False, "reloaded too recently"
+
+        return True, None
+
+    async def monitor_autointerfaces(self):
+
+        while True:
+            try:
+                await asyncio.sleep(self.AUTOINTERFACE_CHECK_INTERVAL_SECONDS)
+
+                if not self.config.autointerface_recovery_enabled.get():
+                    continue
+
+                # a shared instance does not own its interfaces
+                if self.reticulum.is_connected_to_shared_instance:
+                    continue
+
+                now = time.time()
+
+                for autointerface in self.find_autointerfaces():
+                    name = getattr(autointerface, "name", None)
+                    if name is None:
+                        continue
+
+                    state = self.autointerface_state.setdefault(name, {"strikes": 0, "reloads": []})
+                    problem = self.autointerface_problem(autointerface)
+
+                    if problem is None:
+                        state["strikes"] = 0
+                        continue
+
+                    state["strikes"] += 1
+                    print("AutoInterface \"{}\" looks wrong ({}), strike {} of {}".format(
+                        name, problem, state["strikes"], self.AUTOINTERFACE_STRIKES_BEFORE_RELOAD,
+                    ))
+
+                    if state["strikes"] < self.AUTOINTERFACE_STRIKES_BEFORE_RELOAD:
+                        continue
+
+                    allowed, reason = self.may_reload_autointerface(name, now)
+                    if not allowed:
+                        print("Not reloading AutoInterface \"{}\": {}".format(name, reason))
+                        continue
+
+                    state["strikes"] = 0
+                    state["reloads"].append(now)
+
+                    print("Reloading AutoInterface \"{}\" to recover: {}".format(name, problem))
+                    try:
+                        # blocking: tears down sockets and rebuilds the interface
+                        result = await asyncio.to_thread(self.reticulum.reload_interface, name)
+                        if result:
+                            print("AutoInterface \"{}\" reloaded".format(name))
+                        else:
+                            print("AutoInterface \"{}\" reload was refused by Reticulum "
+                                  "(interface management may be disabled)".format(name))
+                    except Exception as e:
+                        print("AutoInterface \"{}\" reload failed: {}".format(name, e))
+
+            except asyncio.CancelledError:
+                raise
+            except Exception as e:
+                print("monitor_autointerfaces error: {}".format(e))
 
     async def persist_path_table_after_quiet_period(self):
 
@@ -4900,6 +5105,7 @@ class Config:
     path_request_on_send_failure_enabled = BoolConfig("path_request_on_send_failure_enabled", True)
     path_warm_on_startup_enabled = BoolConfig("path_warm_on_startup_enabled", True)
     persist_paths_on_discovery_enabled = BoolConfig("persist_paths_on_discovery_enabled", True)
+    autointerface_recovery_enabled = BoolConfig("autointerface_recovery_enabled", True)
 
 # FIXME: we should probably set this as an instance variable of ReticulumMeshChat so it has a proper home, and pass it in to the constructor?
 nomadnet_cached_links = {}

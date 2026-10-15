@@ -160,6 +160,24 @@
                         </div>
                     </div>
 
+                    <div class="p-2">
+                        <div class="flex items-start">
+                            <div class="flex items-center h-5">
+                                <input v-model="config.autointerface_recovery_enabled" @change="onAutointerfaceRecoveryEnabledChange" type="checkbox" class="w-4 h-4 border border-gray-300 dark:border-zinc-600 rounded bg-gray-50 dark:bg-zinc-700 focus:ring-3 focus:ring-blue-300 dark:focus:ring-blue-600">
+                            </div>
+                            <label class="ml-2 text-sm font-medium text-gray-900 dark:text-gray-100">Recover AutoInterface automatically</label>
+                        </div>
+                        <div class="text-sm text-gray-700 dark:text-gray-300">
+                            AutoInterface enumerates your network interfaces and joins its discovery
+                            multicast group once, when it starts. So an interface plugged in afterwards
+                            is never used, and a link that drops and returns never rejoins the group —
+                            both of which leave you restarting the app. This watches for either and
+                            reloads just that interface, which rebuilds it in place. A problem has to
+                            persist for a minute first, reloads are limited to one every five minutes
+                            and four an hour, and an active call blocks one entirely.
+                        </div>
+                    </div>
+
                 </div>
             </div>
 
@@ -307,6 +325,7 @@ export default {
                 path_request_on_send_failure_enabled: null,
                 path_warm_on_startup_enabled: null,
                 persist_paths_on_discovery_enabled: null,
+                autointerface_recovery_enabled: null,
                 lxmf_local_propagation_node_enabled: null,
                 lxmf_preferred_propagation_node_destination_hash: null,
                 auto_select_propagation_node: null,
@@ -374,6 +393,11 @@ export default {
         async onAutoSendFailedMessagesToPropagationNodeChange() {
             await this.updateConfig({
                 "auto_send_failed_messages_to_propagation_node": this.config.auto_send_failed_messages_to_propagation_node,
+            });
+        },
+        async onAutointerfaceRecoveryEnabledChange() {
+            await this.updateConfig({
+                "autointerface_recovery_enabled": this.config.autointerface_recovery_enabled,
             });
         },
         async onPathWarmOnStartupEnabledChange() {

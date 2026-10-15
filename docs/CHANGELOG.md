@@ -5,6 +5,38 @@ section matching the version being built and uses it as the release body.
 
 ### What's new in v2.0.0
 
+**AutoInterface recovers by itself.** Two problems that both ended in "restart
+MeshChat", with one root cause: `AutoInterface` enumerates the system's network
+interfaces once in its constructor, and joins its discovery multicast group once
+there too (`IPV6_JOIN_GROUP`). Nothing ever redoes either.
+
+- Plug ethernet in after launch and that interface is never adopted. `peer_jobs`
+  only iterates the interfaces adopted at startup, so it is never picked up.
+- If a link drops and comes back, the kernel drops the socket's multicast group
+  membership. The link-local address is usually derived from the MAC, so it returns
+  unchanged — which means `peer_jobs`' address-change branch never fires, the socket
+  is never recreated, and nothing rejoins the group. Multicast echoes stop for good:
+  *Multicast echo timeout. Carrier lost.* and it never recovers. This is the
+  "AutoInterface goes stale after a while" case.
+
+Reticulum cannot be restarted in-process — `Reticulum.__init__` raises
+`OSError("Attempt to reinitialise Reticulum, when it was already running")` and the
+singleton is never cleared, not even by `exit_handler()`. But `reload_interface()`
+is supported: it detaches and re-attaches one interface, re-synthesising it from
+config, which re-runs the constructor and so re-enumerates interfaces *and* rejoins
+the multicast group. One mechanism, both problems.
+
+A reload drops peers and links on that interface, so it is deliberately reluctant:
+the problem must persist across two checks 30 seconds apart, reloads are limited to
+one every five minutes and four an hour, an active call blocks one outright, and
+partial trouble is left alone — if one of two interfaces has timed out, the other is
+still carrying traffic and gets to keep doing so. Toggle under Settings → Messages.
+
+The decision logic has its own test suite
+(`tools/tests/test_autointerface_recovery.py`, 24 checks) covering both detection
+cases, the user's own ignore and allow lists, partial versus total carrier loss, the
+rate limits, and the active-call guard.
+
 **Why paths disappeared after a restart.** Reticulum does save its path table —
 LCS MeshChat shuts down cleanly and `Transport.exit_handler()` writes it. The
 problem is the other end: `Transport.start()` only *reads* that file back when
