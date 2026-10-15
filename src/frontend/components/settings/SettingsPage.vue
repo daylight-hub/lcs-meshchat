@@ -131,6 +131,35 @@
                         </div>
                     </div>
 
+                    <div class="p-2">
+                        <div class="flex items-start">
+                            <div class="flex items-center h-5">
+                                <input v-model="config.path_warm_on_startup_enabled" @change="onPathWarmOnStartupEnabledChange" type="checkbox" class="w-4 h-4 border border-gray-300 dark:border-zinc-600 rounded bg-gray-50 dark:bg-zinc-700 focus:ring-3 focus:ring-blue-300 dark:focus:ring-blue-600">
+                            </div>
+                            <label class="ml-2 text-sm font-medium text-gray-900 dark:text-gray-100">Request paths on startup</label>
+                        </div>
+                        <div class="text-sm text-gray-700 dark:text-gray-300">
+                            Reticulum only reloads its saved path table when transport mode is on, so a
+                            restart otherwise begins with no paths and waits for each peer to announce.
+                            This asks for a route to the peers you have spoken to recently instead.
+                            The 20 most recent, skipping any already reachable, spaced three seconds apart.
+                        </div>
+                    </div>
+
+                    <div class="p-2">
+                        <div class="flex items-start">
+                            <div class="flex items-center h-5">
+                                <input v-model="config.persist_paths_on_discovery_enabled" @change="onPersistPathsOnDiscoveryEnabledChange" type="checkbox" class="w-4 h-4 border border-gray-300 dark:border-zinc-600 rounded bg-gray-50 dark:bg-zinc-700 focus:ring-3 focus:ring-blue-300 dark:focus:ring-blue-600">
+                            </div>
+                            <label class="ml-2 text-sm font-medium text-gray-900 dark:text-gray-100">Save paths as they are learned</label>
+                        </div>
+                        <div class="text-sm text-gray-700 dark:text-gray-300">
+                            Reticulum writes its path table on a clean shutdown and otherwise only every
+                            12 hours, so a hard kill can lose a lot of learned routes. This writes it
+                            shortly after new paths appear, at most once every five minutes.
+                        </div>
+                    </div>
+
                 </div>
             </div>
 
@@ -276,6 +305,8 @@ export default {
                 show_suggested_community_interfaces: null,
                 message_alert_enabled: null,
                 path_request_on_send_failure_enabled: null,
+                path_warm_on_startup_enabled: null,
+                persist_paths_on_discovery_enabled: null,
                 lxmf_local_propagation_node_enabled: null,
                 lxmf_preferred_propagation_node_destination_hash: null,
                 auto_select_propagation_node: null,
@@ -343,6 +374,16 @@ export default {
         async onAutoSendFailedMessagesToPropagationNodeChange() {
             await this.updateConfig({
                 "auto_send_failed_messages_to_propagation_node": this.config.auto_send_failed_messages_to_propagation_node,
+            });
+        },
+        async onPathWarmOnStartupEnabledChange() {
+            await this.updateConfig({
+                "path_warm_on_startup_enabled": this.config.path_warm_on_startup_enabled,
+            });
+        },
+        async onPersistPathsOnDiscoveryEnabledChange() {
+            await this.updateConfig({
+                "persist_paths_on_discovery_enabled": this.config.persist_paths_on_discovery_enabled,
             });
         },
         async onPathRequestOnSendFailureEnabledChange() {

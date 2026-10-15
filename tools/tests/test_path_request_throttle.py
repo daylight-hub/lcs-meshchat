@@ -262,6 +262,95 @@ check("the retry does not change the delivery method, leaving propagation armed"
 check("the retry resets the LXMF send state the way the propagation fallback does",
       "packed = None" in retry and "delivery_attempts = 0" in retry)
 
+
+
+
+# ------------------------------------------------------------------------------
+# Startup path warming and debounced persistence.
+#
+# Reticulum saves its path table on clean shutdown but Transport.start() only
+# reads it back when transport mode is enabled, and that defaults to off. So a
+# client restart begins with no paths. These check the two mitigations: asking
+# for the paths that matter at startup, and writing the table as paths are
+# learned rather than only every 12 hours.
+# ------------------------------------------------------------------------------
+
+WARM = ["PATH_WARM_START_DELAY_SECONDS", "PATH_WARM_INTERVAL_SECONDS",
+        "PATH_WARM_MAX_DESTINATIONS", "PATH_WARM_MAX_AGE_DAYS",
+        "PATH_PERSIST_DEBOUNCE_SECONDS", "PATH_PERSIST_MIN_INTERVAL_SECONDS"]
+
+warm = {}
+for node in klass.body:
+    if isinstance(node, ast.Assign):
+        for target in node.targets:
+            if isinstance(target, ast.Name) and target.id in WARM:
+                warm[target.id] = ast.literal_eval(node.value)
+
+print()
+for name in WARM:
+    check("constant present: " + name, name in warm)
+
+if len(warm) == len(WARM):
+    print(f"    warm: delay={warm['PATH_WARM_START_DELAY_SECONDS']}s "
+          f"interval={warm['PATH_WARM_INTERVAL_SECONDS']}s "
+          f"max={warm['PATH_WARM_MAX_DESTINATIONS']} "
+          f"age={warm['PATH_WARM_MAX_AGE_DAYS']}d")
+    print(f"    persist: debounce={warm['PATH_PERSIST_DEBOUNCE_SECONDS']}s "
+          f"floor={warm['PATH_PERSIST_MIN_INTERVAL_SECONDS']}s")
+
+    # the whole warm run must finish in a sane time, and must not be a burst
+    total = (warm["PATH_WARM_START_DELAY_SECONDS"]
+             + warm["PATH_WARM_MAX_DESTINATIONS"] * warm["PATH_WARM_INTERVAL_SECONDS"])
+    check(f"a full warm run spreads over a minute or two, not a burst [{total:.0f}s]",
+          60 <= total <= 180)
+    check("requests are spaced at least a second apart, for slow links",
+          warm["PATH_WARM_INTERVAL_SECONDS"] >= 1.0)
+    check("the startup delay lets interfaces come up first",
+          warm["PATH_WARM_START_DELAY_SECONDS"] >= 5)
+    check("the peer cap is bounded, so a large history cannot flood the link",
+          1 <= warm["PATH_WARM_MAX_DESTINATIONS"] <= 50)
+    check("the persist floor is well above the debounce, so bursts collapse",
+          warm["PATH_PERSIST_MIN_INTERVAL_SECONDS"]
+          >= warm["PATH_PERSIST_DEBOUNCE_SECONDS"] * 4)
+
+for name in ["recent_conversation_destination_hashes", "warm_paths_for_known_peers",
+             "schedule_path_table_persist", "persist_path_table_after_quiet_period"]:
+    check("method present: " + name, name in funcs)
+
+warm_body = body_of("warm_paths_for_known_peers")
+check("warming is skippable from settings",
+      "path_warm_on_startup_enabled" in warm_body)
+check("warming skips peers that already have a path, so it costs nothing when idle",
+      "has_path" in warm_body)
+check("warming sleeps between requests rather than firing them all at once",
+      "asyncio.sleep(self.PATH_WARM_INTERVAL_SECONDS)" in warm_body)
+
+recent = body_of("recent_conversation_destination_hashes")
+check("the peer list excludes this node's own addresses",
+      "own_hashes" in recent)
+check("and is bounded by both a count and an age",
+      "limit" in recent and "max_age_days" in recent)
+check("the SQL is parameterised rather than string-formatted",
+      "execute_sql(query, (" in recent)
+
+sched = body_of("schedule_path_table_persist")
+check("a pending write is not scheduled twice",
+      "path_persist_pending" in sched)
+check("a shared instance is left alone, since it does not own the path table",
+      "is_connected_to_shared_instance" in sched)
+check("persistence is skippable from settings",
+      "persist_paths_on_discovery_enabled" in sched)
+
+persist = body_of("persist_path_table_after_quiet_period")
+check("the write is debounced",
+      "PATH_PERSIST_DEBOUNCE_SECONDS" in persist)
+check("and floored by a minimum interval",
+      "PATH_PERSIST_MIN_INTERVAL_SECONDS" in persist)
+check("disk I/O is kept off the event loop",
+      "asyncio.to_thread" in persist)
+check("the pending flag is always cleared, so writes cannot stop permanently",
+      "finally:" in persist and "path_persist_pending = False" in persist)
+
 print(f"\n{len(ok)} passed, {len(fail)} failed")
 if fail:
     for f in fail:

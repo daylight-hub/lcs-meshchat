@@ -135,6 +135,14 @@ remote management differ only in which transport you pick.
   as before. Throttled to one request per peer per minute and three per peer,
   resetting after 30 minutes of quiet; a delivery or an announce from that peer
   clears the count. Toggle under Settings → Messages.
+- **Request paths on startup.** Reticulum saves its path table on exit but only
+  reloads it when transport mode is on, so a client restart otherwise begins with no
+  paths and waits for each peer to announce. A route is requested for the 20 most
+  recent conversation peers instead, skipping any already reachable, spaced out so a
+  LoRa segment is not flooded.
+- **Save paths as they are learned.** The table is written shortly after new paths
+  appear rather than only on clean shutdown and every 12 hours, so an unclean kill
+  loses minutes of routes instead of hours.
 - **Path Request button** in each conversation, beside the peer's identity. Asks for
   a route on demand and reports the hop count and interface, or that nothing
   answered. Forces the request even when a path is already known, which is the case

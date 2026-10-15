@@ -2,6 +2,7 @@
 
 import argparse
 import asyncio
+import datetime
 import base64
 import io
 import json
@@ -73,6 +74,14 @@ class ReticulumMeshChat:
         # be resolved by a single request rather than each triggering its own.
         self.pending_path_requests = {}
         self.path_requests_in_flight = set()
+
+        # LCS: debounced persistence of the Reticulum path table. RNS writes it on
+        # clean exit and otherwise only every PERSIST_INTERVAL, which is 12 hours,
+        # so an unclean kill can lose a lot of learned routes.
+        self.last_path_persist_at = 0
+        # AsyncUtils.run_async returns nothing to inspect, so pending state is
+        # tracked with a flag rather than a task handle
+        self.path_persist_pending = False
 
         # the file the running identity was loaded from, so it can be replaced by
         # the identity reset. None when the identity came from --identity-base64,
@@ -2940,6 +2949,11 @@ class ReticulumMeshChat:
             # remember main event loop
             AsyncUtils.set_main_loop(asyncio.get_event_loop())
 
+            # LCS: Reticulum only reloads its saved path table when transport mode
+            # is on, so a client restart starts with none. Ask for the ones that
+            # matter rather than waiting for each peer to announce.
+            AsyncUtils.run_async(self.warm_paths_for_known_peers())
+
             # auto launch web browser
             if launch_browser:
                 try:
@@ -3204,6 +3218,14 @@ class ReticulumMeshChat:
             value = bool(data["path_request_on_send_failure_enabled"])
             self.config.path_request_on_send_failure_enabled.set(value)
 
+        if "path_warm_on_startup_enabled" in data:
+            value = bool(data["path_warm_on_startup_enabled"])
+            self.config.path_warm_on_startup_enabled.set(value)
+
+        if "persist_paths_on_discovery_enabled" in data:
+            value = bool(data["persist_paths_on_discovery_enabled"])
+            self.config.persist_paths_on_discovery_enabled.set(value)
+
         if "lxmf_preferred_propagation_node_destination_hash" in data:
 
             # update config value
@@ -3467,6 +3489,8 @@ class ReticulumMeshChat:
             "theme": self.config.theme.get(),
             "message_alert_enabled": self.config.message_alert_enabled.get(),
             "path_request_on_send_failure_enabled": self.config.path_request_on_send_failure_enabled.get(),
+            "path_warm_on_startup_enabled": self.config.path_warm_on_startup_enabled.get(),
+            "persist_paths_on_discovery_enabled": self.config.persist_paths_on_discovery_enabled.get(),
             "auto_resend_failed_messages_when_announce_received": self.config.auto_resend_failed_messages_when_announce_received.get(),
             "allow_auto_resending_failed_messages_with_attachments": self.config.allow_auto_resending_failed_messages_with_attachments.get(),
             "auto_send_failed_messages_to_propagation_node": self.config.auto_send_failed_messages_to_propagation_node.get(),
@@ -4023,6 +4047,150 @@ class ReticulumMeshChat:
     def clear_path_request_attempts(self, destination_hash: str):
         self.path_request_attempts.pop(destination_hash, None)
 
+    # LCS: how paths are warmed at startup and when the path table is written.
+    #
+    # Reticulum persists its path table on clean shutdown, but Transport.start()
+    # only reads it back when transport mode is enabled (Transport.py, "Load
+    # transport-related data"), and transport mode defaults to off. So a client
+    # restart begins with an empty path table and has to wait for each peer to
+    # announce again. Asking for the paths we care about costs a few small packets
+    # and gets conversations working in seconds instead of hours.
+    PATH_WARM_START_DELAY_SECONDS = 10      # let interfaces come up first
+    PATH_WARM_INTERVAL_SECONDS    = 3.0     # gap between requests, to be kind to LoRa
+    PATH_WARM_MAX_DESTINATIONS    = 20      # most recent conversations only
+    PATH_WARM_MAX_AGE_DAYS        = 30      # ignore long-dead contacts
+
+    PATH_PERSIST_DEBOUNCE_SECONDS    = 30   # quiet period before writing
+    PATH_PERSIST_MIN_INTERVAL_SECONDS = 300 # floor between writes on a busy node
+
+    # LCS: the peers worth having a path to at startup -- the other side of each
+    # recent conversation, most recent first.
+    def recent_conversation_destination_hashes(self, limit: int, max_age_days: int):
+
+        own_hashes = {
+            self.local_lxmf_destination.hexhash,
+            self.identity.hexhash,
+        }
+
+        cutoff = time.time() - (max_age_days * 24 * 60 * 60)
+        cutoff_iso = datetime.datetime.fromtimestamp(cutoff, datetime.timezone.utc).strftime("%Y-%m-%d %H:%M:%S")
+
+        query = """
+        SELECT source_hash, destination_hash, MAX(created_at) AS most_recent
+        FROM lxmf_messages
+        WHERE created_at > ?
+        GROUP BY source_hash, destination_hash
+        ORDER BY most_recent DESC;
+        """
+
+        destination_hashes = []
+        try:
+            cursor = database.database.execute_sql(query, (cutoff_iso,))
+            for source_hash, destination_hash, _most_recent in cursor.fetchall():
+                for candidate in (source_hash, destination_hash):
+                    if candidate is None:
+                        continue
+                    if candidate in own_hashes:
+                        continue
+                    if candidate in destination_hashes:
+                        continue
+                    destination_hashes.append(candidate)
+                    if len(destination_hashes) >= limit:
+                        return destination_hashes
+        except Exception as e:
+            print("could not read recent conversations for path warming: {}".format(e))
+
+        return destination_hashes
+
+    # LCS: ask the network for a path to each recent peer we do not already have one
+    # for. Staggered, because on a slow link a burst of requests is worse than no
+    # requests at all.
+    async def warm_paths_for_known_peers(self):
+
+        try:
+            if not self.config.path_warm_on_startup_enabled.get():
+                return
+
+            await asyncio.sleep(self.PATH_WARM_START_DELAY_SECONDS)
+
+            destination_hashes = self.recent_conversation_destination_hashes(
+                self.PATH_WARM_MAX_DESTINATIONS, self.PATH_WARM_MAX_AGE_DAYS,
+            )
+            if len(destination_hashes) == 0:
+                return
+
+            requested = 0
+            already_known = 0
+
+            for destination_hash in destination_hashes:
+                try:
+                    raw_destination_hash = bytes.fromhex(destination_hash)
+                except ValueError:
+                    continue
+
+                # nothing to do if the route survived or has already been relearned
+                if RNS.Transport.has_path(raw_destination_hash):
+                    already_known += 1
+                    continue
+
+                RNS.Transport.request_path(raw_destination_hash)
+                requested += 1
+                await asyncio.sleep(self.PATH_WARM_INTERVAL_SECONDS)
+
+            print("Path warming: requested {} path(s), {} already known, of {} recent peer(s)".format(
+                requested, already_known, len(destination_hashes),
+            ))
+
+        except Exception as e:
+            print("warm_paths_for_known_peers error: {}".format(e))
+
+    # LCS: note that the path table has changed and arrange for it to be written.
+    #
+    # Called on every announce, which is far too often to write each time, so the
+    # write is debounced and additionally floored by a minimum interval.
+    def schedule_path_table_persist(self):
+
+        try:
+            if not self.config.persist_paths_on_discovery_enabled.get():
+                return
+
+            # a shared instance does not own the path table
+            if self.reticulum.is_connected_to_shared_instance:
+                return
+
+            # a timer is already waiting, and it will cover this announce too
+            if self.path_persist_pending:
+                return
+
+            self.path_persist_pending = True
+            AsyncUtils.run_async(self.persist_path_table_after_quiet_period())
+
+        except Exception as e:
+            print("schedule_path_table_persist error: {}".format(e))
+
+    async def persist_path_table_after_quiet_period(self):
+
+        try:
+            await asyncio.sleep(self.PATH_PERSIST_DEBOUNCE_SECONDS)
+
+            now = time.time()
+            if now - self.last_path_persist_at < self.PATH_PERSIST_MIN_INTERVAL_SECONDS:
+                return
+
+            self.last_path_persist_at = now
+
+            # disk I/O under a lock, so keep it off the event loop. background=True
+            # makes RNS yield between entries rather than blocking on a large table.
+            await asyncio.to_thread(RNS.Transport.persist_data, True)
+
+        except Exception as e:
+            print("persist_path_table_after_quiet_period error: {}".format(e))
+
+        finally:
+            # cleared last, so a new announce schedules the next write rather than
+            # being swallowed while this one was running
+            self.path_persist_pending = False
+
     # sends a previously failed message via a propagation node
     def send_failed_message_via_propagation_node(self, lxmf_message: LXMF.LXMessage):
 
@@ -4346,6 +4514,10 @@ class ReticulumMeshChat:
 
         # LCS: the peer is clearly reachable, so stop rationing path requests to it
         self.clear_path_request_attempts(destination_hash.hex())
+
+        # LCS: an announce is how a path gets established, so the table has just
+        # changed. Debounced, since announces arrive far too often to write each time.
+        self.schedule_path_table_persist()
 
         # resend all failed messages that were intended for this destination
         if self.config.auto_resend_failed_messages_when_announce_received.get():
@@ -4726,6 +4898,8 @@ class Config:
     telephone_enabled = BoolConfig("telephone_enabled", True)
     message_alert_enabled = BoolConfig("message_alert_enabled", True)
     path_request_on_send_failure_enabled = BoolConfig("path_request_on_send_failure_enabled", True)
+    path_warm_on_startup_enabled = BoolConfig("path_warm_on_startup_enabled", True)
+    persist_paths_on_discovery_enabled = BoolConfig("persist_paths_on_discovery_enabled", True)
 
 # FIXME: we should probably set this as an instance variable of ReticulumMeshChat so it has a proper home, and pass it in to the constructor?
 nomadnet_cached_links = {}

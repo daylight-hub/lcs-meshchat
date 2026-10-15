@@ -3,6 +3,40 @@
 Version history for LCS MeshChat. The release workflow reads the
 section matching the version being built and uses it as the release body.
 
+### What's new in v2.0.0
+
+**Why paths disappeared after a restart.** Reticulum does save its path table —
+LCS MeshChat shuts down cleanly and `Transport.exit_handler()` writes it. The
+problem is the other end: `Transport.start()` only *reads* that file back when
+transport mode is enabled, and transport mode defaults to off. So a normal client
+saved its paths faithfully and then ignored them on every start, which is why it sat
+there waiting for the other side to announce again.
+
+Two fixes, both optional under Settings → Messages:
+
+- **Request paths on startup.** Ten seconds after launch, LCS MeshChat asks for a
+  route to each peer you have exchanged messages with in the last 30 days — the 20
+  most recent, skipping any already reachable, spaced three seconds apart so a LoRa
+  segment is not flooded. Conversations work again in about a minute instead of
+  waiting hours for an announce.
+- **Save paths as they are learned.** Reticulum writes the table on clean shutdown
+  and otherwise only every 12 hours (`PERSIST_INTERVAL`), so an unclean kill — a
+  Docker stop timeout, a power cut — could lose most of a day's learned routes. The
+  table is now written shortly after new paths appear, debounced by 30 seconds and
+  floored at one write every five minutes, off the event loop so a large table does
+  not stall the UI.
+
+Neither changes your node's role on the network. Enabling transport mode would also
+make Reticulum reload the table itself, but it would make you route other people's
+traffic too, which on a LoRa segment is not a small thing.
+
+**Paths expiring while running** is separate and mostly not what was happening: with
+the default interface mode the expiry is a week (`PATHFINDER_E`). It is six hours
+only if an interface is set to `roaming`, and one day for `access point`.
+
+Nothing in this release breaks compatibility: the storage directory is unchanged,
+identities and databases carry over, and no API was removed.
+
 ### What's new in v1.9.9
 
 **Path request on send failure.** Reticulum only learns a route when something asks
