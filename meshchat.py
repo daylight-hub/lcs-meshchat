@@ -155,6 +155,12 @@ class ReticulumMeshChat:
 
         # init reticulum
         self.reticulum = RNS.Reticulum(reticulum_config_dir)
+
+        # LCS: load the saved path table ourselves. Must run after the Reticulum
+        # constructor, since interfaces are attached while config is applied and
+        # each entry's interface is re-resolved by hash.
+        self.restore_path_table()
+
         self.identity = identity
 
         # init lxmf router
@@ -4077,6 +4083,124 @@ class ReticulumMeshChat:
 
     PATH_PERSIST_DEBOUNCE_SECONDS    = 30   # quiet period before writing
     PATH_PERSIST_MIN_INTERVAL_SECONDS = 300 # floor between writes on a busy node
+
+    # LCS: whether this destination's identity has been blackholed.
+    #
+    # Mirrors the check upstream's own path-table loader makes. getattr-guarded
+    # because blackholed_identities is newer than some RNS pins, and a missing
+    # attribute should mean "nothing is blackholed", not a failed restore.
+    @staticmethod
+    def is_path_blackholed(destination_hash: bytes) -> bool:
+        blackholed = getattr(RNS.Transport, "blackholed_identities", None)
+        if not blackholed:
+            return False
+        try:
+            identity = RNS.Identity.recall(destination_hash, _no_use=True)
+        except TypeError:
+            # older pins have no _no_use keyword
+            identity = RNS.Identity.recall(destination_hash)
+        return identity in blackholed
+
+    # LCS: load the saved path table whether or not transport mode is enabled.
+    #
+    # RNS writes the path table unconditionally -- save_path_table only skips when
+    # connected to a shared instance -- but reads it back inside Transport.start
+    # under "if RNS.Reticulum.transport_enabled()". With transport off, every
+    # learned route was written to storage and never loaded again, so the app lost
+    # its routes on every restart and the peer had to announce before it could be
+    # reached.
+    #
+    # Doing the load here keeps transport mode a choice about whether to carry
+    # other people's traffic, rather than the price of keeping your own routes. The
+    # approach is taken from Liberty Chat's event_bridge.restore_path_table.
+    #
+    # Mirrors upstream's loader in Transport.start field for field, including
+    # re-resolving the interface by hash and bumping the cached announce's hop
+    # count, since reading a packet from cache is equivalent to receiving it again.
+    # An entry that is already live is left alone: anything learned since this
+    # process started is fresher than what is on disk.
+    #
+    # Returns the number of entries restored.
+    def restore_path_table(self) -> int:
+
+        transport = RNS.Transport
+
+        if transport.owner is not None and getattr(
+                transport.owner, "is_connected_to_shared_instance", False):
+            # another RNS app owns the stack; its path table is not ours to seed
+            return 0
+
+        if RNS.Reticulum.transport_enabled():
+            # upstream already loaded it inside Transport.start
+            return 0
+
+        path = RNS.Reticulum.storagepath + "/destination_table"
+        if not os.path.isfile(path):
+            return 0
+
+        try:
+            with open(path, "rb") as handle:
+                serialised = msgpack.unpackb(handle.read())
+        except Exception as e:
+            # a corrupt table must not stop the app starting
+            print("could not read the saved path table: {}".format(e))
+            return 0
+
+        hash_length = RNS.Reticulum.TRUNCATED_HASHLENGTH // 8
+        restored = 0
+        skipped_live = 0
+
+        for entry in serialised:
+            try:
+                destination_hash = entry[0]
+                if len(destination_hash) != hash_length:
+                    continue
+
+                with transport.path_table_lock:
+                    already_live = destination_hash in transport.path_table
+                if already_live:
+                    skipped_live += 1
+                    continue
+
+                timestamp, received_from, hops, expires, random_blobs = entry[1:6]
+                receiving_interface = transport.find_interface_from_hash(entry[6])
+                announce_packet = transport.get_cached_packet(entry[7], packet_type="announce")
+
+                if announce_packet is None or receiving_interface is None:
+                    continue
+
+                # Upstream drops these too. Restoring a path to a blackholed
+                # identity would quietly undo the blackhole for as long as the
+                # entry lived.
+                if self.is_path_blackholed(destination_hash):
+                    continue
+
+                if not announce_packet.unpack():
+                    continue
+
+                # the cached announce carries its pre-increment hop count
+                announce_packet.hops += 1
+
+                with transport.path_table_lock:
+                    transport.path_table[destination_hash] = [
+                        timestamp,
+                        received_from,
+                        hops,
+                        expires,
+                        random_blobs,
+                        receiving_interface,
+                        announce_packet.packet_hash,
+                    ]
+                restored += 1
+
+            except Exception as e:
+                # one bad row must not lose the rest
+                print("skipped a saved path entry: {}".format(e))
+
+        print("Restored {} path(s) from storage with transport disabled "
+              "({} already live, {} on disk)".format(
+                  restored, skipped_live, len(serialised)))
+        return restored
 
     # LCS: the peers worth having a path to at startup -- the other side of each
     # recent conversation, most recent first.

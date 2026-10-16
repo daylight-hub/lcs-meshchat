@@ -139,10 +139,11 @@
                             <label class="ml-2 text-sm font-medium text-gray-900 dark:text-gray-100">Request paths on startup</label>
                         </div>
                         <div class="text-sm text-gray-700 dark:text-gray-300">
-                            Reticulum only reloads its saved path table when transport mode is on, so a
-                            restart otherwise begins with no paths and waits for each peer to announce.
-                            This asks for a route to the peers you have spoken to recently instead.
-                            The 20 most recent, skipping any already reachable, spaced three seconds apart.
+                            A backstop for the few routes the saved path table could not restore —
+                            usually ones whose cached announce has expired. Asks for a route to the
+                            peers you have spoken to recently, skipping any already reachable, so with
+                            a healthy saved table this sends nothing at all. At most the 20 most
+                            recent, spaced three seconds apart.
                         </div>
                     </div>
 

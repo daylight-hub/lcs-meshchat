@@ -144,11 +144,17 @@ remote management differ only in which transport you pick.
   has gone quiet while others still work — the wifi-up, ethernet-stale case. Rate
   limited, never interrupts a call, and virtual interfaces that come and go (container
   veths, VPN tunnels) never trigger one.
+- **The saved path table is loaded at startup**, whether or not transport mode is on.
+  Reticulum writes it on every clean shutdown but only reads it back with transport
+  enabled, so a client used to lose its routes on every restart. Routes are restored
+  without touching the network, and transport mode stays a choice about carrying other
+  people's traffic rather than the price of keeping your own routes.
 - **Request paths on startup.** Reticulum saves its path table on exit but only
   reloads it when transport mode is on, so a client restart otherwise begins with no
-  paths and waits for each peer to announce. A route is requested for the 20 most
-  recent conversation peers instead, skipping any already reachable, spaced out so a
-  LoRa segment is not flooded.
+  paths. A backstop for the few routes the saved table could not restore, usually
+  because their cached announce expired: a route is requested for recent conversation
+  peers, skipping any already reachable, so with a healthy saved table it sends
+  nothing.
 - **Save paths as they are learned.** The table is written shortly after new paths
   appear rather than only on clean shutdown and every 12 hours, so an unclean kill
   loses minutes of routes instead of hours.

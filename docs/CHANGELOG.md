@@ -3,6 +3,40 @@
 Version history for LCS MeshChat. The release workflow reads the
 section matching the version being built and uses it as the release body.
 
+### What's new in v2.0.2
+
+**The saved path table is now loaded, so startup barely needs to ask the network
+anything.** v2.0.0 recovered from the lost-paths problem by requesting a route for
+each recent peer — about twenty small packets spread over seventy seconds, on every
+launch. That was more airtime than the problem deserved.
+
+Reticulum writes the path table on every clean shutdown; it just refuses to read it
+back unless transport mode is on. So the fix is to read it ourselves, which is what
+Liberty Chat does in `event_bridge.restore_path_table`, and this is a port of that
+approach. It runs right after the Reticulum instance is built, mirrors upstream's own
+loader in `Transport.start` field for field — re-resolving each entry's interface by
+hash and bumping the cached announce's hop count — and declines to overwrite anything
+already live, since a route learned since this process started is fresher than one on
+disk. Blackholed identities are dropped, as upstream does, because restoring a route
+to one would quietly undo the blackhole.
+
+**Startup path requests are now a backstop rather than the mechanism.** They still
+run, and still skip any peer already reachable — which after a successful restore is
+most or all of them. What remains is the handful whose cached announce has expired and
+so could not be reconstructed. With a healthy saved table, startup sends nothing.
+
+Why not do this in the first place: the earlier reasoning was that a restored route
+can be present but dead, and a dead-but-present route is worse than none, because
+`has_path()` returns true and the first send goes down a route that no longer exists.
+That is true, but it was the wrong weighting — v1.9.9 already requests a path and
+retries when a send fails, so the cost of a stale entry is one failed message rather
+than a stranded conversation. One retry beats twenty path requests per launch.
+
+`tools/tests/test_path_table_restore.py` adds 23 checks, run against a stand-in
+Reticulum rather than only inspected. The important one asserts the seven-element
+entry's field order against RNS's `IDX_PT_*` constants: getting that wrong would not
+fail loudly, it would install corrupt routes.
+
 ### What's new in v2.0.1
 
 **AutoInterface recovery now covers a stale interface while others still work.**
