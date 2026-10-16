@@ -139,8 +139,11 @@ remote management differ only in which transport you pick.
   and joins its discovery multicast group only in its constructor, so an interface
   plugged in after launch is never used, and a link that drops and returns never
   rejoins the group — it reports *Carrier lost* and stays that way. Both are watched
-  for and fixed by reloading that one interface, which rebuilds it in place. Requires
-  the problem to persist, rate limited, and never interrupts a call.
+  for and fixed by reloading that one interface, which rebuilds it in place. Acts
+  within a minute when every interface has gone quiet, and after five minutes when one
+  has gone quiet while others still work — the wifi-up, ethernet-stale case. Rate
+  limited, never interrupts a call, and virtual interfaces that come and go (container
+  veths, VPN tunnels) never trigger one.
 - **Request paths on startup.** Reticulum saves its path table on exit but only
   reloads it when transport mode is on, so a client restart otherwise begins with no
   paths and waits for each peer to announce. A route is requested for the 20 most

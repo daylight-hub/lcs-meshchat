@@ -27,8 +27,11 @@ CONSTANTS = [
     "AUTOINTERFACE_STRIKES_BEFORE_RELOAD",
     "AUTOINTERFACE_RELOAD_COOLDOWN_SECONDS",
     "AUTOINTERFACE_MAX_RELOADS_PER_HOUR",
+    "AUTOINTERFACE_PARTIAL_STALE_SECONDS",
+    "AUTOINTERFACE_VIRTUAL_IF_PREFIXES",
 ]
 METHODS = [
+    "is_virtual_interface_name",
     "usable_link_local_interfaces",
     "autointerface_problem",
     "may_reload_autointerface",
@@ -74,7 +77,10 @@ class Recovery:
 for name, value in constants.items():
     setattr(Recovery, name, value)
 for name in METHODS:
-    setattr(Recovery, name, namespace[name])
+    if name == "is_virtual_interface_name":
+        setattr(Recovery, name, classmethod(namespace[name]))
+    else:
+        setattr(Recovery, name, namespace[name])
 
 
 def netinfo_with(interface_addresses):
@@ -122,6 +128,7 @@ print(f"    check every {constants['AUTOINTERFACE_CHECK_INTERVAL_SECONDS']}s, "
       f"max {constants['AUTOINTERFACE_MAX_RELOADS_PER_HOUR']}/hour")
 print()
 
+NOW = 1_000_000.0
 r = Recovery()
 
 # --- constants are coherent ----------------------------------------------------
@@ -132,6 +139,10 @@ check("the cooldown is longer than the confirmation window",
       constants["AUTOINTERFACE_RELOAD_COOLDOWN_SECONDS"] > confirm_delay)
 check("the hourly cap allows recovery but not thrashing",
       1 <= constants["AUTOINTERFACE_MAX_RELOADS_PER_HOUR"] <= 10)
+check("the partial-staleness grace period is much longer than the strike window",
+      constants["AUTOINTERFACE_PARTIAL_STALE_SECONDS"] >= confirm_delay * 4)
+check("and short enough to recover within a few minutes",
+      constants["AUTOINTERFACE_PARTIAL_STALE_SECONDS"] <= 900)
 
 # --- a healthy interface is left alone -----------------------------------------
 healthy = FakeAutoInterface(
@@ -140,7 +151,7 @@ healthy = FakeAutoInterface(
     timed_out={"eth0": False},
 )
 check("a healthy interface reports no problem",
-      r.autointerface_problem(healthy) is None)
+      r.autointerface_problem(healthy, NOW, {}) is None)
 check("the loopback is not mistaken for an unadopted interface",
       "lo0" not in r.usable_link_local_interfaces(healthy))
 
@@ -150,7 +161,7 @@ plugged_in = FakeAutoInterface(
     adopted={"wlan0": "fe80::2"},
     timed_out={"wlan0": False},
 )
-problem = r.autointerface_problem(plugged_in)
+problem = r.autointerface_problem(plugged_in, NOW, {})
 check("ethernet plugged in after launch is detected", problem is not None)
 check("and the reason names the interface",
       problem is not None and "eth0" in problem and "not using" in problem)
@@ -162,7 +173,7 @@ no_address_yet = FakeAutoInterface(
     timed_out={"wlan0": False},
 )
 check("an interface with no link-local address yet is not flagged",
-      r.autointerface_problem(no_address_yet) is None)
+      r.autointerface_problem(no_address_yet, NOW, {}) is None)
 
 # --- case 2: carrier lost and never recovered ----------------------------------
 stale = FakeAutoInterface(
@@ -170,7 +181,7 @@ stale = FakeAutoInterface(
     adopted={"eth0": "fe80::1"},
     timed_out={"eth0": True},
 )
-problem = r.autointerface_problem(stale)
+problem = r.autointerface_problem(stale, NOW, {})
 check("an interface whose multicast echo stopped is detected", problem is not None)
 check("and the reason says carrier lost",
       problem is not None and "carrier lost" in problem and "eth0" in problem)
@@ -181,8 +192,77 @@ partial = FakeAutoInterface(
     adopted={"eth0": "fe80::1", "wlan0": "fe80::2"},
     timed_out={"eth0": True, "wlan0": False},
 )
-check("one interface timing out of two is not enough to reload",
-      r.autointerface_problem(partial) is None)
+# The behaviour that matters most: ethernet into the mesh goes stale while wifi is
+# still up. It must not reload instantly -- the healthy interface is carrying
+# traffic and a reload interrupts it -- but it must reload eventually, because
+# nothing rejoins the multicast group on its own.
+timers = {}
+check("one interface of two going stale is not acted on immediately",
+      r.autointerface_problem(partial, NOW, timers) is None)
+check("and the moment it went stale is remembered",
+      timers.get("eth0") == NOW)
+
+grace = constants["AUTOINTERFACE_PARTIAL_STALE_SECONDS"]
+check("still not acted on part-way through the grace period",
+      r.autointerface_problem(partial, NOW + grace - 1, timers) is None)
+
+problem = r.autointerface_problem(partial, NOW + grace + 1, timers)
+check(f"acted on once it has been stale for {grace}s, even with wifi up",
+      problem is not None)
+check("and the reason says the other interfaces are still up",
+      problem is not None and "eth0" in problem and "other interfaces are up" in problem)
+
+# a stale interface that comes back on its own must not be reloaded later
+recovering = FakeAutoInterface(
+    system={"eth0": ["fe80::1"], "wlan0": ["fe80::2"]},
+    adopted={"eth0": "fe80::1", "wlan0": "fe80::2"},
+    timed_out={"eth0": True, "wlan0": False},
+)
+timers = {}
+r.autointerface_problem(recovering, NOW, timers)
+recovering.timed_out_interfaces["eth0"] = False
+check("an interface that recovers on its own clears its timer",
+      r.autointerface_problem(recovering, NOW + 1, timers) is None
+      and "eth0" not in timers)
+
+# and having recovered, it must start from zero if it goes stale again
+recovering.timed_out_interfaces["eth0"] = True
+r.autointerface_problem(recovering, NOW + 100, timers)
+check("a second spell of staleness starts a fresh timer",
+      timers.get("eth0") == NOW + 100)
+check("so the old elapsed time does not carry over",
+      r.autointerface_problem(recovering, NOW + 100 + grace - 1, timers) is None)
+
+# an interface that stops being adopted should not leave a timer behind
+timers = {"ppp0": NOW}
+r.autointerface_problem(recovering, NOW + 1, timers)
+check("timers for interfaces no longer adopted are dropped", "ppp0" not in timers)
+
+# --- virtual and transient interfaces must not cause churn --------------------
+# On a Linux host a container starting brings up a veth with a link-local address.
+# Treating that as "a new interface appeared" would reload on every container.
+for name in ["veth1a2b3c", "docker0", "br-9f8e7d", "tun0", "lo", "utun3", "zt0"]:
+    check(f"{name} is recognised as virtual", r.is_virtual_interface_name(name) is True)
+for name in ["eth0", "wlan0", "en0", "enp3s0", "wlp2s0"]:
+    check(f"{name} is not treated as virtual", r.is_virtual_interface_name(name) is False)
+
+container_started = FakeAutoInterface(
+    system={"eth0": ["fe80::1"], "veth1a2b3c": ["fe80::99"], "docker0": ["fe80::98"]},
+    adopted={"eth0": "fe80::1"},
+    timed_out={"eth0": False},
+)
+check("a container starting does not trigger a reload",
+      r.autointerface_problem(container_started, NOW, {}) is None)
+
+# but a real interface appearing alongside virtual ones still does
+real_and_virtual = FakeAutoInterface(
+    system={"wlan0": ["fe80::2"], "eth0": ["fe80::1"], "veth1a2b3c": ["fe80::99"]},
+    adopted={"wlan0": "fe80::2"},
+    timed_out={"wlan0": False},
+)
+problem = r.autointerface_problem(real_and_virtual, NOW, {})
+check("a real interface appearing is still detected alongside virtual ones",
+      problem is not None and "eth0" in problem and "veth" not in problem)
 
 both_stale = FakeAutoInterface(
     system={"eth0": ["fe80::1"], "wlan0": ["fe80::2"]},
@@ -190,7 +270,7 @@ both_stale = FakeAutoInterface(
     timed_out={"eth0": True, "wlan0": True},
 )
 check("both interfaces timing out is a problem",
-      r.autointerface_problem(both_stale) is not None)
+      r.autointerface_problem(both_stale, NOW, {}) is not None)
 
 # --- the user's own filters are respected --------------------------------------
 ignored = FakeAutoInterface(
@@ -200,7 +280,7 @@ ignored = FakeAutoInterface(
     ignored=["docker0"],
 )
 check("an interface the user ignored is not flagged as unadopted",
-      r.autointerface_problem(ignored) is None)
+      r.autointerface_problem(ignored, NOW, {}) is None)
 
 restricted = FakeAutoInterface(
     system={"eth0": ["fe80::1"], "wlan0": ["fe80::2"]},
@@ -209,10 +289,9 @@ restricted = FakeAutoInterface(
     allowed=["eth0"],
 )
 check("with an allow list, interfaces outside it are not flagged",
-      r.autointerface_problem(restricted) is None)
+      r.autointerface_problem(restricted, NOW, {}) is None)
 
 # --- rate limiting -------------------------------------------------------------
-NOW = 1_000_000.0
 r = Recovery()
 
 allowed, reason = r.may_reload_autointerface("Default Interface", NOW)

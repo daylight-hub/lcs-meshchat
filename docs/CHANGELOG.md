@@ -3,6 +3,32 @@
 Version history for LCS MeshChat. The release workflow reads the
 section matching the version being built and uses it as the release body.
 
+### What's new in v2.0.1
+
+**AutoInterface recovery now covers a stale interface while others still work.**
+v2.0.0 only reloaded when *every* adopted interface had gone quiet, so the case that
+matters most on a laptop was missed: ethernet into the mesh goes stale while wifi is
+still up, wifi keeps hearing its own multicast echoes and so looks healthy, and the
+dead ethernet is never rebuilt.
+
+A single stale interface is now acted on too, but on a longer fuse. If everything has
+gone quiet nothing is working and it reloads within a minute, as before. If one
+interface is quiet while others are carrying traffic it waits five minutes first,
+because a reload interrupts the healthy ones as well — and an interface that recovers
+on its own inside that window is left alone, with its timer reset.
+
+**Virtual interfaces no longer cause churn.** A container starting brings up a `veth`
+with a link-local address, and a VPN brings up a `tun`. v2.0.0 read each of those as
+"a new interface appeared" and reloaded, repeatedly, on any Docker host. Interfaces
+named `veth*`, `docker*`, `br-*`, `virbr*`, `tun*`, `tap*`, `zt*`, `wg*`,
+`tailscale*`, `utun*`, `bridge*`, `vmnet*`, `lo*`, `awdl*` and `llw*` no longer
+trigger a reload on arrival. This only suppresses the trigger: AutoInterface still
+adopts and uses them exactly as before, and staleness on one is still acted on.
+
+Test suite for the recovery logic doubles to 48 checks, including the wifi-up /
+ethernet-stale case end to end, recovery inside the grace period, a second spell of
+staleness starting a fresh timer, and the container-churn case.
+
 ### What's new in v2.0.0
 
 **AutoInterface recovers by itself.** Two problems that both ended in "restart

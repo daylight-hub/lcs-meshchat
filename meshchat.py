@@ -4217,6 +4217,18 @@ class ReticulumMeshChat:
     AUTOINTERFACE_STRIKES_BEFORE_RELOAD  = 2    # consecutive bad checks required
     AUTOINTERFACE_RELOAD_COOLDOWN_SECONDS = 300 # minimum gap between reloads
     AUTOINTERFACE_MAX_RELOADS_PER_HOUR   = 4    # ceiling, so a flapping link cannot thrash
+    AUTOINTERFACE_PARTIAL_STALE_SECONDS  = 300  # one interface dead while others work
+
+    # Interfaces whose appearance and disappearance is routine and not worth
+    # rebuilding the whole AutoInterface for. A container starting brings up a veth
+    # with a link-local address; a VPN brings up a tun. Each of those would
+    # otherwise read as "a new interface appeared" and trigger a reload, over and
+    # over. This only suppresses the *trigger* -- AutoInterface still adopts and
+    # uses them exactly as before, and staleness on one is still acted on.
+    AUTOINTERFACE_VIRTUAL_IF_PREFIXES = (
+        "lo", "veth", "docker", "br-", "virbr", "tun", "tap", "zt", "wg",
+        "tailscale", "utun", "bridge", "vmnet", "awdl", "llw",
+    )
 
     # LCS: the live AutoInterface instances, found by class name so this does not
     # depend on importing from RNS.Interfaces.
@@ -4232,6 +4244,13 @@ class ReticulumMeshChat:
         except Exception as e:
             print("could not enumerate AutoInterfaces: {}".format(e))
         return found
+
+    # LCS: is this a virtual or transient interface whose arrival should not by
+    # itself cause a reload
+    @classmethod
+    def is_virtual_interface_name(cls, ifname) -> bool:
+        name = str(ifname).lower()
+        return any(name.startswith(prefix) for prefix in cls.AUTOINTERFACE_VIRTUAL_IF_PREFIXES)
 
     # LCS: system interfaces that have a link-local address and that this
     # AutoInterface would be willing to use, mirroring the filtering its own
@@ -4270,31 +4289,68 @@ class ReticulumMeshChat:
         return usable
 
     # LCS: why this AutoInterface needs rebuilding, or None if it is healthy.
-    def autointerface_problem(self, autointerface):
+    #
+    # stale_since is this interface's record of when each adopted interface was
+    # first seen timed out; it is updated in place so staleness can be measured
+    # over time, since AutoInterface only exposes a boolean.
+    def autointerface_problem(self, autointerface, now: float, stale_since: dict):
 
         adopted = set((getattr(autointerface, "adopted_interfaces", None) or {}).keys())
 
-        # case 1: something usable turned up that was never adopted
+        # case 1: something usable turned up that was never adopted. Virtual and
+        # transient interfaces are excluded, because a container or VPN starting
+        # would otherwise trigger a reload every time.
         usable = self.usable_link_local_interfaces(autointerface)
-        unadopted = usable - adopted
+        unadopted = {name for name in (usable - adopted)
+                     if not self.is_virtual_interface_name(name)}
         if len(unadopted) > 0:
             return "not using {}".format(", ".join(sorted(unadopted)))
 
-        # case 2: every adopted interface has lost its multicast echo. Partial loss
-        # is left alone, since the remaining interfaces are still carrying traffic
-        # and a reload would interrupt them too.
+        # case 2: multicast echoes have stopped on an adopted interface. Nothing
+        # rejoins the discovery group after a link drops, so this does not recover
+        # on its own.
         timed_out = getattr(autointerface, "timed_out_interfaces", None) or {}
-        if len(adopted) > 0:
-            stale = [name for name in adopted if timed_out.get(name) is True]
-            if len(stale) == len(adopted):
-                return "carrier lost on {}".format(", ".join(sorted(stale)))
+
+        stale = set()
+        for ifname in adopted:
+            if timed_out.get(ifname) is True:
+                stale.add(ifname)
+                stale_since.setdefault(ifname, now)
+            else:
+                stale_since.pop(ifname, None)
+
+        # anything no longer adopted should not keep a timer
+        for ifname in list(stale_since.keys()):
+            if ifname not in adopted:
+                stale_since.pop(ifname, None)
+
+        if len(stale) == 0:
+            return None
+
+        # everything is dead, so nothing is working and there is nothing to protect
+        # by waiting. Act on the normal strike count.
+        if len(stale) == len(adopted):
+            return "carrier lost on {}".format(", ".join(sorted(stale)))
+
+        # Some interfaces are still carrying traffic. A reload interrupts those too,
+        # so give the dead one a chance to recover on its own first -- but do act in
+        # the end, because it will not. This is the wifi-up / ethernet-stale case.
+        overdue = sorted(
+            ifname for ifname in stale
+            if now - stale_since.get(ifname, now) >= self.AUTOINTERFACE_PARTIAL_STALE_SECONDS
+        )
+        if len(overdue) > 0:
+            return "carrier lost on {} for over {}s while other interfaces are up".format(
+                ", ".join(overdue), self.AUTOINTERFACE_PARTIAL_STALE_SECONDS,
+            )
 
         return None
 
     # LCS: is a reload allowed right now
     def may_reload_autointerface(self, name: str, now: float):
 
-        state = self.autointerface_state.setdefault(name, {"strikes": 0, "reloads": []})
+        state = self.autointerface_state.setdefault(
+            name, {"strikes": 0, "reloads": [], "stale_since": {}})
 
         # never interrupt a call for this
         try:
@@ -4333,8 +4389,10 @@ class ReticulumMeshChat:
                     if name is None:
                         continue
 
-                    state = self.autointerface_state.setdefault(name, {"strikes": 0, "reloads": []})
-                    problem = self.autointerface_problem(autointerface)
+                    state = self.autointerface_state.setdefault(
+                        name, {"strikes": 0, "reloads": [], "stale_since": {}})
+                    state.setdefault("stale_since", {})
+                    problem = self.autointerface_problem(autointerface, now, state["stale_since"])
 
                     if problem is None:
                         state["strikes"] = 0
@@ -4355,6 +4413,9 @@ class ReticulumMeshChat:
 
                     state["strikes"] = 0
                     state["reloads"].append(now)
+                    # the interface is about to be rebuilt, so its old staleness
+                    # timers mean nothing
+                    state["stale_since"] = {}
 
                     print("Reloading AutoInterface \"{}\" to recover: {}".format(name, problem))
                     try:

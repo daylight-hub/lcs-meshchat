@@ -172,9 +172,12 @@
                             multicast group once, when it starts. So an interface plugged in afterwards
                             is never used, and a link that drops and returns never rejoins the group —
                             both of which leave you restarting the app. This watches for either and
-                            reloads just that interface, which rebuilds it in place. A problem has to
-                            persist for a minute first, reloads are limited to one every five minutes
-                            and four an hour, and an active call blocks one entirely.
+                            reloads just that interface, which rebuilds it in place. If every interface
+                            has gone quiet it acts within a minute; if one has gone quiet while others
+                            still work it waits five minutes first, since a reload interrupts the
+                            working ones too. Reloads are limited to one every five minutes and four an
+                            hour, an active call blocks one entirely, and virtual interfaces that come
+                            and go — container veths, VPN tunnels — never trigger one.
                         </div>
                     </div>
 
