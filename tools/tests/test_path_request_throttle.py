@@ -217,11 +217,31 @@ check("propagation still happens when path requests are turned off",
 # propagation node was unreachable, not the recipient. LXMF requests a path to its
 # own propagation node and retries that itself, so asking here would target the
 # wrong destination and the retry would only repeat the propagation attempt.
-check("an already-propagated message does not trigger a path request",
+check("an already-propagated message does not ask about the recipient",
       "already_propagated" in failed
       and "not already_propagated" in failed)
 check("and that check reads the delivery method, not the fallback flag",
       "desired_method" in failed and "PROPAGATED" in failed)
+
+# It asks about the node instead. LXMF does not cover this: its propagated branch
+# requests a path only when it has none, so against a stale entry it goes straight
+# to RNS.Link, fails, and retries the same dead route until the attempts run out.
+# There is no drop-and-rediscover there either -- that is opportunistic-only. The
+# node was the one destination in the ladder with no recovery at all.
+check("a failed propagated message asks for a path to the propagation node",
+      "get_outbound_propagation_node" in failed
+      and "path_destination_hash" in failed)
+check("and does nothing when no propagation node is configured",
+      "propagation_node is None" in failed)
+
+queue_signature = source.split("def queue_failed_message_for_path_request(")[1].split(")")[0]
+check("the queue can be keyed on a destination other than the recipient",
+      "path_destination_hash" in queue_signature)
+
+updated = body_of("on_lxmf_sending_state_updated")
+check("a propagated message that was accepted resets the node's attempts too",
+      "get_outbound_propagation_node" in updated
+      and "clear_path_request_attempts" in updated)
 
 queue = body_of("queue_failed_message_for_path_request")
 

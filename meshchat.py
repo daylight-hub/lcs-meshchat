@@ -3886,6 +3886,17 @@ class ReticulumMeshChat:
         if lxmf_message.state in [LXMF.LXMessage.DELIVERED, LXMF.LXMessage.SENT]:
             self.clear_path_request_attempts(lxmf_message.destination_hash.hex())
 
+            # A propagated message reaching SENT means the node accepted it, not
+            # that the recipient has it. The node is what just proved reachable,
+            # and its attempts are counted under its own hash, so clear those too.
+            if getattr(lxmf_message, "method", None) == LXMF.LXMessage.PROPAGATED:
+                try:
+                    propagation_node = self.message_router.get_outbound_propagation_node()
+                    if propagation_node is not None:
+                        self.clear_path_request_attempts(propagation_node.hex())
+                except Exception:
+                    pass
+
         # upsert lxmf message to database
         self.db_upsert_lxmf_message(lxmf_message)
 
@@ -3904,12 +3915,8 @@ class ReticulumMeshChat:
             wants_propagation = bool(getattr(lxmf_message, "try_propagation_on_fail", False))
 
             # LCS: a propagated message that failed did so because the propagation
-            # node could not be reached, not the recipient, and LXMF already
-            # requests a path to its own propagation node and retries
-            # (LXMRouter.process_outbound, MAX_DELIVERY_ATTEMPTS attempts spaced by
-            # PATH_REQUEST_WAIT). Asking for a path to the recipient here would be
-            # aimed at the wrong destination, and retrying would only repeat the
-            # propagation attempt, since the delivery method is unchanged.
+            # node could not be reached, not the recipient, so a path request aimed
+            # at the recipient would be aimed at the wrong destination.
             already_propagated = getattr(lxmf_message, "desired_method", None) == LXMF.LXMessage.PROPAGATED
 
             # LCS: try to recover a direct route first. Direct delivery is better
@@ -3922,6 +3929,32 @@ class ReticulumMeshChat:
             # failed until that peer announces again.
             if self.config.path_request_on_send_failure_enabled.get() and not already_propagated:
                 self.queue_failed_message_for_path_request(lxmf_message, wants_propagation)
+
+            # LCS: the last rung. A propagated message that failed means the node
+            # itself was unreachable, and until now nothing asked about it: the
+            # message simply stopped here.
+            #
+            # LXMF does not cover this. Its propagated branch requests a path only
+            # when it has none -- with a stale entry it goes straight to RNS.Link,
+            # the link fails, and it retries the same dead route until the attempt
+            # count runs out, never asking. There is no drop-and-rediscover here
+            # either; that exists only in the opportunistic branch. So the node is
+            # the one destination in the whole delivery ladder with no recovery at
+            # all, which is worth fixing given everything falls back to it.
+            elif self.config.path_request_on_send_failure_enabled.get():
+                propagation_node = None
+                try:
+                    propagation_node = self.message_router.get_outbound_propagation_node()
+                except Exception as e:
+                    print("could not read the outbound propagation node: {}".format(e))
+
+                if propagation_node is None:
+                    # nothing was configured, so the send cannot have been aimed
+                    # anywhere and there is nothing useful to ask about
+                    print("A propagated message failed with no propagation node configured")
+                else:
+                    self.queue_failed_message_for_path_request(
+                        lxmf_message, False, path_destination_hash=propagation_node.hex())
 
             # path requests turned off, so behave as before
             elif wants_propagation:
@@ -4049,9 +4082,15 @@ class ReticulumMeshChat:
     # callback each. They are collected per destination and resolved together by one
     # path request, so the network is asked once and no message is either sent twice
     # or dropped.
-    def queue_failed_message_for_path_request(self, lxmf_message, wants_propagation: bool):
+    # path_destination_hash is the destination to ask the network about, which is
+    # the recipient for a direct send and the propagation node for a propagated
+    # one. Keying the queue, the attempt counter and the cooldown on it keeps the
+    # two rate limited separately, so a peer that cannot be reached does not use up
+    # the node's budget or the other way round.
+    def queue_failed_message_for_path_request(self, lxmf_message, wants_propagation: bool,
+                                              path_destination_hash: str = None):
 
-        destination_hash = lxmf_message.destination_hash.hex()
+        destination_hash = path_destination_hash or lxmf_message.destination_hash.hex()
         pending = self.pending_path_requests.setdefault(destination_hash, [])
 
         if len(pending) < self.PATH_REQUEST_MAX_PENDING:

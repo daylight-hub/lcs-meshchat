@@ -39,6 +39,19 @@ Tapping the button again inside that window does nothing but spend airtime, so t
 60-second cooldown on automatic requests is now documented against that limit, and
 the button's "no reply" message says to wait before retrying.
 
+**A failed propagated message now asks about the propagation node.** Everything
+falls back to the node, and it was the one destination in the whole delivery ladder
+with no recovery at all: when a propagated send failed, the message simply stopped
+there and nothing asked where the node had gone.
+
+LXMF does not cover this. Its propagated branch requests a path only when it has
+none — with a stale entry it goes straight to `RNS.Link`, the link fails, and it
+retries the same dead route until the attempt count runs out, never asking. The
+drop-and-rediscover that rescues opportunistic delivery does not exist in that
+branch either. So the node now gets the same refresh the recipient gets, keyed on
+its own hash so the two have separate attempt counters and cooldowns, and a
+propagated message the node accepts resets the node's budget.
+
 **AutoInterface now reloads within seconds of a cable moving, instead of up to a
 minute and a half.** AutoInterface joins its multicast group once, in `__init__`, so
 an interface that appears after startup is never adopted however long you wait —
@@ -68,7 +81,7 @@ so turn it off there.
 
 **Fixed:** the AutoInterface recovery test suite could not run on Python 3.13 — it
 re-wrapped an already-decorated class method, which 3.13 refuses to call. All five
-suites pass (177 checks).
+suites pass (181 checks).
 
 ### What's new in v2.0.2
 
