@@ -4426,11 +4426,36 @@ class ReticulumMeshChat:
     # reluctant: a problem has to persist across consecutive checks, reloads are
     # rate limited and capped per hour, and an active call blocks one outright.
     # ------------------------------------------------------------------
-    AUTOINTERFACE_CHECK_INTERVAL_SECONDS = 30   # how often to look
+    AUTOINTERFACE_CHECK_INTERVAL_SECONDS = 30   # how often to judge staleness
     AUTOINTERFACE_STRIKES_BEFORE_RELOAD  = 2    # consecutive bad checks required
-    AUTOINTERFACE_RELOAD_COOLDOWN_SECONDS = 300 # minimum gap between reloads
+    AUTOINTERFACE_RELOAD_COOLDOWN_SECONDS = 300 # minimum gap between staleness reloads
     AUTOINTERFACE_MAX_RELOADS_PER_HOUR   = 4    # ceiling, so a flapping link cannot thrash
     AUTOINTERFACE_PARTIAL_STALE_SECONDS  = 300  # one interface dead while others work
+
+    # LCS: the fast path, for a link that physically changes under us.
+    #
+    # Waiting for staleness is right when a working interface quietly stops
+    # working, but wrong when the cable moves. AutoInterface joins its multicast
+    # group in __init__ and never again, so an interface that appears after start
+    # -- an ethernet cable plugged in, a carrier coming back -- is never adopted,
+    # no matter how long we wait. The slow path eventually notices because
+    # everything else has gone quiet, which took up to a minute and a half and
+    # only worked if the rest of the network was quiet too.
+    #
+    # So the loop now wakes every couple of seconds and compares a signature of
+    # what the system actually has: interface names, their carrier state where the
+    # kernel exposes it, and their link-local addresses. A change that *adds*
+    # something reloads almost immediately -- it is unambiguous and there is
+    # nothing to gain by waiting. A change that only removes something does not:
+    # there is nothing to rebuild onto, so the staleness path judges it as before.
+    #
+    # Settling first matters because unplugging and replugging is two changes a
+    # second apart, and reloading on the first would tear down sockets just as the
+    # second arrived.
+    AUTOINTERFACE_POLL_SECONDS = 2              # how often the loop wakes
+    AUTOINTERFACE_LINK_SETTLE_SECONDS = 3       # quiet period before acting on a change
+    AUTOINTERFACE_LINK_RELOAD_COOLDOWN_SECONDS = 15
+    AUTOINTERFACE_MAX_LINK_RELOADS_PER_HOUR = 12
 
     # Interfaces whose appearance and disappearance is routine and not worth
     # rebuilding the whole AutoInterface for. A container starting brings up a veth
@@ -4501,6 +4526,69 @@ class ReticulumMeshChat:
 
         return usable
 
+    # LCS: the kernel's carrier flag for an interface, or None where it is not
+    # exposed. Linux publishes it in sysfs; nothing else here does, and on those
+    # platforms the address set below carries the signal instead.
+    @staticmethod
+    def interface_carrier(ifname: str):
+
+        try:
+            with open("/sys/class/net/{}/carrier".format(ifname), "r") as handle:
+                return handle.read().strip() == "1"
+        except Exception:
+            return None
+
+    # LCS: what the system looks like right now, from this AutoInterface's point of
+    # view. Compared against the previous reading to spot a link change; the value
+    # itself is never interpreted, only diffed, so what matters is that it moves
+    # when the hardware does.
+    def link_signature(self, autointerface) -> frozenset:
+
+        signature = set()
+        try:
+            netinfo = autointerface.netinfo
+            for ifname in self.usable_link_local_interfaces(autointerface):
+                addresses = []
+                try:
+                    for address in netinfo.ifaddresses(ifname).get(netinfo.AF_INET6, []):
+                        addr = str(address.get("addr", ""))
+                        if addr.startswith("fe80:"):
+                            addresses.append(addr)
+                except Exception:
+                    pass
+                signature.add((ifname, self.interface_carrier(ifname), tuple(sorted(addresses))))
+        except Exception as e:
+            print("could not read link signature: {}".format(e))
+
+        return frozenset(signature)
+
+    # LCS: did this change bring something back that we could use?
+    #
+    # Only an addition justifies the fast reload: a rebuilt AutoInterface will
+    # adopt it, which is the thing that cannot happen otherwise. Virtual
+    # interfaces are excluded for the same reason they are elsewhere -- a
+    # container or VPN coming up is not a network change worth tearing sockets
+    # down for.
+    def link_change_is_additive(self, previous: frozenset, current: frozenset) -> bool:
+
+        previous_names = {entry[0] for entry in previous}
+
+        for ifname, carrier, addresses in current:
+            if self.is_virtual_interface_name(ifname):
+                continue
+            if ifname not in previous_names:
+                return True
+            was = next((e for e in previous if e[0] == ifname), None)
+            if was is None:
+                continue
+            # carrier came back, or the interface gained a link-local address
+            if carrier is True and was[1] is False:
+                return True
+            if len(addresses) > len(was[2]):
+                return True
+
+        return False
+
     # LCS: why this AutoInterface needs rebuilding, or None if it is healthy.
     #
     # stale_since is this interface's record of when each adopted interface was
@@ -4560,7 +4648,11 @@ class ReticulumMeshChat:
         return None
 
     # LCS: is a reload allowed right now
-    def may_reload_autointerface(self, name: str, now: float):
+    # link_change is the fast path: the cable moved, which is hard evidence rather
+    # than an inference from silence, so it gets its own budget. The slow path's
+    # five-minute gap exists because staleness can be misread; a carrier coming
+    # back cannot, and someone testing a cable should not be told to wait.
+    def may_reload_autointerface(self, name: str, now: float, link_change: bool = False):
 
         state = self.autointerface_state.setdefault(
             name, {"strikes": 0, "reloads": [], "stale_since": {}})
@@ -4574,19 +4666,59 @@ class ReticulumMeshChat:
 
         state["reloads"] = [t for t in state["reloads"] if now - t < 3600]
 
-        if len(state["reloads"]) >= self.AUTOINTERFACE_MAX_RELOADS_PER_HOUR:
+        if link_change:
+            cap = self.AUTOINTERFACE_MAX_LINK_RELOADS_PER_HOUR
+            cooldown = self.AUTOINTERFACE_LINK_RELOAD_COOLDOWN_SECONDS
+        else:
+            cap = self.AUTOINTERFACE_MAX_RELOADS_PER_HOUR
+            cooldown = self.AUTOINTERFACE_RELOAD_COOLDOWN_SECONDS
+
+        if len(state["reloads"]) >= cap:
             return False, "already reloaded {} times in the last hour".format(len(state["reloads"]))
 
-        if len(state["reloads"]) > 0 and now - state["reloads"][-1] < self.AUTOINTERFACE_RELOAD_COOLDOWN_SECONDS:
+        if len(state["reloads"]) > 0 and now - state["reloads"][-1] < cooldown:
             return False, "reloaded too recently"
 
         return True, None
+
+    # LCS: the reload itself, shared by the link-change path and the staleness
+    # path so both are rate limited and logged the same way.
+    async def reload_autointerface(self, name: str, reason: str, now: float,
+                                   link_change: bool = False) -> bool:
+
+        allowed, refusal = self.may_reload_autointerface(name, now, link_change=link_change)
+        if not allowed:
+            print("Not reloading AutoInterface \"{}\": {}".format(name, refusal))
+            return False
+
+        state = self.autointerface_state.setdefault(
+            name, {"strikes": 0, "reloads": [], "stale_since": {}})
+        state["strikes"] = 0
+        state["reloads"].append(now)
+        # the interface is about to be rebuilt, so its old staleness timers and
+        # its link signature both describe something that will not exist
+        state["stale_since"] = {}
+        state["link_signature"] = None
+
+        print("Reloading AutoInterface \"{}\" to recover: {}".format(name, reason))
+        try:
+            # blocking: tears down sockets and rebuilds the interface
+            result = await asyncio.to_thread(self.reticulum.reload_interface, name)
+            if result:
+                print("AutoInterface \"{}\" reloaded".format(name))
+                return True
+            print("AutoInterface \"{}\" reload was refused by Reticulum "
+                  "(interface management may be disabled)".format(name))
+        except Exception as e:
+            print("AutoInterface \"{}\" reload failed: {}".format(name, e))
+
+        return False
 
     async def monitor_autointerfaces(self):
 
         while True:
             try:
-                await asyncio.sleep(self.AUTOINTERFACE_CHECK_INTERVAL_SECONDS)
+                await asyncio.sleep(self.AUTOINTERFACE_POLL_SECONDS)
 
                 if not self.config.autointerface_recovery_enabled.get():
                     continue
@@ -4605,6 +4737,45 @@ class ReticulumMeshChat:
                     state = self.autointerface_state.setdefault(
                         name, {"strikes": 0, "reloads": [], "stale_since": {}})
                     state.setdefault("stale_since", {})
+
+                    # --- fast path: the link itself changed ------------------
+                    signature = self.link_signature(autointerface)
+                    previous = state.get("link_signature")
+                    state["link_signature"] = signature
+
+                    if previous is not None and signature != previous:
+                        # record it and wait: unplug-then-replug is two changes a
+                        # second apart and only the settled result is worth acting on
+                        state["link_changed_at"] = now
+                        state["link_additive"] = self.link_change_is_additive(previous, signature)
+                        print("Network change seen on AutoInterface \"{}\"{}".format(
+                            name, "" if state["link_additive"] else " (nothing new to use)",
+                        ))
+                        continue
+
+                    changed_at = state.get("link_changed_at")
+                    if changed_at is not None:
+                        if now - changed_at < self.AUTOINTERFACE_LINK_SETTLE_SECONDS:
+                            continue
+
+                        state["link_changed_at"] = None
+                        additive = state.pop("link_additive", False)
+
+                        if additive:
+                            await self.reload_autointerface(
+                                name, "a usable interface appeared", now, link_change=True)
+                        else:
+                            # nothing to rebuild onto, so let staleness judge it,
+                            # but not against timers from the old topology
+                            state["stale_since"] = {}
+                            state["strikes"] = 0
+                        continue
+
+                    # --- slow path: a working interface went quiet -----------
+                    if now - state.get("last_health_check", 0) < self.AUTOINTERFACE_CHECK_INTERVAL_SECONDS:
+                        continue
+                    state["last_health_check"] = now
+
                     problem = self.autointerface_problem(autointerface, now, state["stale_since"])
 
                     if problem is None:
@@ -4619,28 +4790,7 @@ class ReticulumMeshChat:
                     if state["strikes"] < self.AUTOINTERFACE_STRIKES_BEFORE_RELOAD:
                         continue
 
-                    allowed, reason = self.may_reload_autointerface(name, now)
-                    if not allowed:
-                        print("Not reloading AutoInterface \"{}\": {}".format(name, reason))
-                        continue
-
-                    state["strikes"] = 0
-                    state["reloads"].append(now)
-                    # the interface is about to be rebuilt, so its old staleness
-                    # timers mean nothing
-                    state["stale_since"] = {}
-
-                    print("Reloading AutoInterface \"{}\" to recover: {}".format(name, problem))
-                    try:
-                        # blocking: tears down sockets and rebuilds the interface
-                        result = await asyncio.to_thread(self.reticulum.reload_interface, name)
-                        if result:
-                            print("AutoInterface \"{}\" reloaded".format(name))
-                        else:
-                            print("AutoInterface \"{}\" reload was refused by Reticulum "
-                                  "(interface management may be disabled)".format(name))
-                    except Exception as e:
-                        print("AutoInterface \"{}\" reload failed: {}".format(name, e))
+                    await self.reload_autointerface(name, problem, now)
 
             except asyncio.CancelledError:
                 raise
@@ -5377,7 +5527,11 @@ class Config:
     telephone_enabled = BoolConfig("telephone_enabled", True)
     message_alert_enabled = BoolConfig("message_alert_enabled", True)
     path_request_on_send_failure_enabled = BoolConfig("path_request_on_send_failure_enabled", True)
-    path_warm_on_startup_enabled = BoolConfig("path_warm_on_startup_enabled", True)
+    # Off by default since v2.0.3. The saved path table is loaded at startup, so
+    # the sweep's job is already done for every peer whose cached announce
+    # survived, and what it adds for the rest is a burst of path requests on a
+    # link that may be LoRa. Turn it on in Settings if you want the backstop.
+    path_warm_on_startup_enabled = BoolConfig("path_warm_on_startup_enabled", False)
     persist_paths_on_discovery_enabled = BoolConfig("persist_paths_on_discovery_enabled", True)
     autointerface_recovery_enabled = BoolConfig("autointerface_recovery_enabled", True)
 

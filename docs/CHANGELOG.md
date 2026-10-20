@@ -39,9 +39,36 @@ Tapping the button again inside that window does nothing but spend airtime, so t
 60-second cooldown on automatic requests is now documented against that limit, and
 the button's "no reply" message says to wait before retrying.
 
+**AutoInterface now reloads within seconds of a cable moving, instead of up to a
+minute and a half.** AutoInterface joins its multicast group once, in `__init__`, so
+an interface that appears after startup is never adopted however long you wait —
+unplugging ethernet and plugging it back in left it unused. Recovery previously came
+from the staleness check, which looked every 30 seconds and wanted two consecutive
+bad readings, and only noticed at all once everything else had gone quiet too.
+
+The monitor now wakes every two seconds and compares what the system actually has:
+interface names, their carrier state where the kernel exposes it (sysfs on Linux),
+and their link-local addresses. A change that *adds* something usable triggers a
+reload almost at once — that is unambiguous, and there is nothing to gain by
+waiting. A change that only removes something does not, because there is nothing to
+rebuild onto; the staleness path judges that case as before. Changes settle for three
+seconds first, so unplug-then-replug is one reload rather than two.
+
+Because a carrier coming back is hard evidence rather than something inferred from
+silence, link-change reloads get their own budget: a 15-second gap and up to 12 an
+hour, against five minutes and four an hour for staleness. An active call still
+blocks a reload outright, and container and VPN interfaces still never trigger one.
+
+**Startup no longer sends path requests by default.** The saved path table is loaded
+at startup and covers every peer whose cached announce survived, so the sweep was
+only adding anything for the handful it could not restore — and on a LoRa link that
+is a burst of airtime for very little. It is now off unless you turn it on in
+Settings. If you enabled it explicitly on an earlier version your setting is kept,
+so turn it off there.
+
 **Fixed:** the AutoInterface recovery test suite could not run on Python 3.13 — it
-re-wrapped an already-decorated class method, which 3.13 refuses to call. All four
-suites pass again (152 checks).
+re-wrapped an already-decorated class method, which 3.13 refuses to call. All five
+suites pass (177 checks).
 
 ### What's new in v2.0.2
 

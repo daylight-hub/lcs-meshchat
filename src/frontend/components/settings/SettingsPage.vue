@@ -139,11 +139,12 @@
                             <label class="ml-2 text-sm font-medium text-gray-900 dark:text-gray-100">Request paths on startup</label>
                         </div>
                         <div class="text-sm text-gray-700 dark:text-gray-300">
-                            A backstop for the few routes the saved path table could not restore —
-                            usually ones whose cached announce has expired. Asks for a route to the
-                            peers you have spoken to recently, skipping any already reachable, so with
-                            a healthy saved table this sends nothing at all. At most the 20 most
-                            recent, spaced three seconds apart.
+                            Off by default. The saved path table is loaded at startup, which covers
+                            every peer whose cached announce survived, so this only adds anything for
+                            the few it could not restore — and on a LoRa link that is a burst of
+                            requests for very little. Turn it on if you want the backstop: it asks for
+                            a route to the peers you have spoken to recently, skips any already
+                            reachable, and sends at most 20 requests spaced three seconds apart.
                         </div>
                     </div>
 
