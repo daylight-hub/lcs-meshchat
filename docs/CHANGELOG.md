@@ -3,6 +3,46 @@
 Version history for LCS MeshChat. The release workflow reads the
 section matching the version being built and uses it as the release body.
 
+### What's new in v2.0.3
+
+**Path requests now actually repair a broken route.** Until now, both the Path
+Request button and the automatic request after a failed send asked the network for
+a route and then watched `has_path` for a change. Against the case they exist for —
+a route we already hold that no longer works — that could never do anything.
+
+Reticulum answers a path request by replaying the announce it has in cache, and
+`Transport.inbound` refuses an announce it has heard before: every branch of its
+acceptance test needs either a random blob it has not seen or no existing entry at
+all. The replay is the very announce the bad entry was built from, so the table was
+never updated. Worse, `has_path` is membership in that table, so it was already true
+before the request, during it and after. The automatic retry therefore returned
+within milliseconds reporting success and re-sent the message down the route that
+had just failed, three times, and gave up. The button reported "Path found" having
+confirmed nothing.
+
+Both now drop the entry first. With it gone the replayed announce is accepted
+unconditionally and the route is rebuilt around whichever next hop answers now. The
+second benefit is an honest answer: with nothing in the table, `has_path` going true
+again can only mean a reply arrived. The button says "Path refreshed" only when that
+happened, and says so plainly when nothing answered rather than presenting the old
+route as a fresh one. If the network stays silent the previous entry is put back, so
+a failed request never costs a route that was working.
+
+This is the same approach LXMF itself takes when an opportunistic delivery stalls
+(`drop_path`, settle, `request_path`) and the one Liberty Chat already uses for
+NomadNet page loads — neither app was using it for messaging.
+
+**Repeat requests are paced to the network, not to the user.** RNS 1.5.5 added an
+in-flight gate: a transport node that is already carrying a path request for a
+destination batches any further request for up to 45 seconds and takes no action.
+Tapping the button again inside that window does nothing but spend airtime, so the
+60-second cooldown on automatic requests is now documented against that limit, and
+the button's "no reply" message says to wait before retrying.
+
+**Fixed:** the AutoInterface recovery test suite could not run on Python 3.13 — it
+re-wrapped an already-decorated class method, which 3.13 refuses to call. All four
+suites pass again (152 checks).
+
 ### What's new in v2.0.2
 
 **The saved path table is now loaded, so startup barely needs to ask the network

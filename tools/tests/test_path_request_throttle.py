@@ -239,9 +239,17 @@ check("the worker always resolves its queue, even on error",
       "finally:" in worker and "resolve_pending_path_request" in worker)
 check("the in-flight marker is always cleared",
       "path_requests_in_flight.discard" in worker)
-check("the path is requested unconditionally, not only when absent",
-      "RNS.Transport.request_path" in worker
-      and "if not RNS.Transport.has_path" not in worker.split("request_path(")[0])
+# The worker used to call request_path directly and then poll has_path. That could
+# never work against the entry it exists to replace: the reply is a replay of the
+# announce the entry was built from, which Reticulum discards as already heard, and
+# has_path was true throughout, so the poll returned at once and the message was
+# retried over the route that had just failed. refresh_path drops the entry first.
+check("the worker refreshes the route rather than only asking for it",
+      "refresh_path" in worker)
+check("and no longer polls has_path itself, which could not detect a change",
+      "RNS.Transport.has_path" not in worker)
+check("the bare request_path call is gone from the worker",
+      "RNS.Transport.request_path" not in worker)
 
 resolve = body_of("resolve_pending_path_request")
 

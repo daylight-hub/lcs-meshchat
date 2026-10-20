@@ -77,10 +77,10 @@ class Recovery:
 for name, value in constants.items():
     setattr(Recovery, name, value)
 for name in METHODS:
-    if name == "is_virtual_interface_name":
-        setattr(Recovery, name, classmethod(namespace[name]))
-    else:
-        setattr(Recovery, name, namespace[name])
+    # The lifted definitions keep their decorators, so a @classmethod in
+    # meshchat.py is already a classmethod object here. Wrapping it again gave a
+    # classmethod of a classmethod, which Python 3.13 refuses to call.
+    setattr(Recovery, name, namespace[name])
 
 
 def netinfo_with(interface_addresses):

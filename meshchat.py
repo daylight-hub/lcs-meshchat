@@ -2340,6 +2340,7 @@ class ReticulumMeshChat:
 
             path_was_known = RNS.Transport.has_path(destination_hash)
             path_was_requested = False
+            path_was_refreshed = False
 
             if should_request_now or should_force:
 
@@ -2347,19 +2348,28 @@ class ReticulumMeshChat:
                 timeout_seconds = int(request.query.get("timeout", 15))
                 timeout_after_seconds = time.time() + timeout_seconds
 
-                # request path if we don't have it, or if asked to regardless
-                if should_force or not path_was_known:
+                if should_force:
+
+                    # LCS: a forced request means the caller suspects the entry we
+                    # already hold, so refresh_path drops it before asking. That is
+                    # the only way a replayed announce gets accepted, and it is also
+                    # what makes the answer mean something -- with no entry left, a
+                    # path appearing again is proof the network replied.
+                    path_was_requested = True
+                    path_was_refreshed = await self.refresh_path(destination_hash, timeout_seconds)
+
+                elif not path_was_known:
+
+                    # nothing held for this peer, so a plain request is enough and
+                    # has_path going true already proves a response arrived
                     RNS.Transport.request_path(destination_hash)
                     path_was_requested = True
 
-                if path_was_known and should_force:
-                    # nothing will flip from false to true, so just give the
-                    # response time to arrive rather than polling for a change
-                    await asyncio.sleep(min(2, timeout_seconds))
-                else:
                     # wait until we have a path, or give up after the configured timeout
                     while not RNS.Transport.has_path(destination_hash) and time.time() < timeout_after_seconds:
                         await asyncio.sleep(0.1)
+
+                    path_was_refreshed = RNS.Transport.has_path(destination_hash)
 
             # ensure path is known
             if not RNS.Transport.has_path(destination_hash):
@@ -2367,6 +2377,7 @@ class ReticulumMeshChat:
                     "path": None,
                     "path_was_known": path_was_known,
                     "path_was_requested": path_was_requested,
+                    "path_was_refreshed": path_was_refreshed,
                 })
 
             # determine next hop and hop count
@@ -2379,6 +2390,7 @@ class ReticulumMeshChat:
                     "path": None,
                     "path_was_known": path_was_known,
                     "path_was_requested": path_was_requested,
+                    "path_was_refreshed": path_was_refreshed,
                 })
 
             next_hop = next_hop_bytes.hex()
@@ -2392,6 +2404,7 @@ class ReticulumMeshChat:
                 },
                 "path_was_known": path_was_known,
                 "path_was_requested": path_was_requested,
+                "path_was_refreshed": path_was_refreshed,
             })
 
         # drop path to destination
@@ -3918,11 +3931,88 @@ class ReticulumMeshChat:
         self.on_lxmf_sending_state_updated(lxmf_message)
 
     # LCS: how hard to try recovering a route after a send failure.
+    # The cooldown must stay at or above RNS PATH_REQUEST_GATE_TIMEOUT (45s). A
+    # transport node registers an in-flight path request per destination and
+    # answers later requests with "already in-flight, batching to existing" until
+    # that gate clears or an announce for the destination passes through it, so
+    # asking again sooner is swallowed at the first hop and only costs airtime.
     PATH_REQUEST_COOLDOWN_SECONDS = 60      # minimum gap between attempts per destination
     PATH_REQUEST_MAX_ATTEMPTS = 3           # attempts before leaving it to an announce
     PATH_REQUEST_TIMEOUT_SECONDS = 15       # how long to wait for a path response
     PATH_REQUEST_RESET_SECONDS = 1800       # quiet period after which the count restarts
     PATH_REQUEST_MAX_PENDING = 100          # per destination, so a backlog cannot grow without bound
+
+    # LCS: how long to wait for Reticulum to actually remove a dropped entry, and
+    # how often to look. drop_path forces the Transport job loop to cull on its
+    # next pass (job_interval 0.25s), so this is generous rather than tight.
+    PATH_REFRESH_SETTLE_SECONDS = 1.5
+    PATH_REFRESH_POLL_SECONDS = 0.05
+
+    # LCS: repair a route we already hold, and report honestly whether it worked.
+    #
+    # A path request on its own cannot do this. Reticulum answers one by replaying
+    # the announce it has in cache, and Transport.inbound refuses an announce it
+    # has already heard: every branch of the acceptance test needs either a random
+    # blob it has not seen, or no existing entry at all. The replayed announce is
+    # the same one we learned the bad route from, so nothing changes -- and the
+    # entry we already hold is precisely the one that is wrong when a send fails.
+    #
+    # Dropping it first is what makes the replay acceptable. Reticulum expires the
+    # entry, the job loop culls it, and the next announce is taken unconditionally,
+    # rebuilding the route with whatever next hop answers now.
+    #
+    # The useful second effect is a truthful answer. has_path() is membership in a
+    # table, so with a stale entry present it is true before the request, true
+    # during it and true after, and can never distinguish "refreshed" from "nobody
+    # replied". With the entry gone, it going true again can only mean a response
+    # arrived. Everything that reports a path to the user depends on that.
+    #
+    # Dropping is not free: if nothing answers we have thrown away a route that may
+    # have been fine, so the old entry is put back unless an announce replaced it
+    # while we waited.
+    async def refresh_path(self, destination_hash: bytes, timeout_seconds: float) -> bool:
+
+        transport = RNS.Transport
+        previous_entry = None
+
+        if transport.has_path(destination_hash):
+
+            with transport.path_table_lock:
+                entry = transport.path_table.get(destination_hash)
+                previous_entry = list(entry) if entry is not None else None
+
+            self.reticulum.drop_path(destination_hash)
+
+            settle_until = time.time() + self.PATH_REFRESH_SETTLE_SECONDS
+            while transport.has_path(destination_hash) and time.time() < settle_until:
+                await asyncio.sleep(self.PATH_REFRESH_POLL_SECONDS)
+
+            if transport.has_path(destination_hash):
+                # Shared instance, or the cull did not run. Asking is still worth
+                # doing, but has_path can no longer prove anything here, so fall
+                # back to the old optimistic answer rather than reporting a failure
+                # that may not be real.
+                transport.request_path(destination_hash)
+                await asyncio.sleep(min(2.0, timeout_seconds))
+                return transport.has_path(destination_hash)
+
+        transport.request_path(destination_hash)
+
+        timeout_at = time.time() + timeout_seconds
+        while not transport.has_path(destination_hash) and time.time() < timeout_at:
+            await asyncio.sleep(0.25)
+
+        if transport.has_path(destination_hash):
+            return True
+
+        if previous_entry is not None:
+            # nothing replied, so leave the peer no worse off than before
+            with transport.path_table_lock:
+                if destination_hash not in transport.path_table:
+                    transport.path_table[destination_hash] = previous_entry
+            print("No path response for {}, restored the previous entry".format(destination_hash.hex()))
+
+        return False
 
     # LCS: decide whether a destination is due another path request.
     #
@@ -3999,25 +4089,24 @@ class ReticulumMeshChat:
         try:
             raw_destination_hash = bytes.fromhex(destination_hash)
 
-            # Asked for unconditionally, including when a path is already known: a
-            # known-but-stale entry is exactly the case this is here to fix, and the
-            # response refreshes it.
-            RNS.Transport.request_path(raw_destination_hash)
-            print("Requesting path to {} after a send failure (attempt {} of {})".format(
+            # The route we hold is the prime suspect -- the send just failed over
+            # it -- so refresh_path drops it before asking. Requesting without
+            # dropping is what this function used to do, and it could not work: the
+            # replayed announce was rejected as one we had already heard, has_path
+            # was already true so the wait below returned on its first check, and
+            # the message was retried over the same dead route within milliseconds.
+            print("Refreshing path to {} after a send failure (attempt {} of {})".format(
                 destination_hash, attempt["count"], self.PATH_REQUEST_MAX_ATTEMPTS,
             ))
 
-            timeout_after_seconds = time.time() + self.PATH_REQUEST_TIMEOUT_SECONDS
-            while not RNS.Transport.has_path(raw_destination_hash) and time.time() < timeout_after_seconds:
-                await asyncio.sleep(0.25)
+            path_found = await self.refresh_path(raw_destination_hash, self.PATH_REQUEST_TIMEOUT_SECONDS)
 
-            path_found = RNS.Transport.has_path(raw_destination_hash)
             if path_found:
                 # give the refreshed entry a moment to settle before using it
                 await asyncio.sleep(0.5)
-                print("Path to {} found, retrying failed messages".format(destination_hash))
+                print("Path to {} refreshed, retrying failed messages".format(destination_hash))
             else:
-                print("No path to {} after the request timed out".format(destination_hash))
+                print("Nothing answered the path request for {}".format(destination_hash))
 
         except Exception as e:
             # never leave messages stuck in the pending queue on an error

@@ -692,9 +692,12 @@ export default {
                 });
             }
         },
-        // LCS: ask the network where this peer is now. force=true so it asks even
-        // when a path is already known -- a stale entry is the usual reason sending
-        // fails while the header still shows a hop count.
+        // LCS: ask the network where this peer is now. force=true drops the entry
+        // we hold before asking -- a stale entry is the usual reason sending fails
+        // while the header still shows a hop count, and Reticulum will not replace
+        // an entry with an announce it has already heard. Dropping it first is also
+        // what lets the server tell a real reply apart from the route it already
+        // had, which is why path_was_refreshed is worth reporting separately.
         async requestPath() {
 
             if(this.isRequestingPath || !this.selectedPeer){
@@ -710,14 +713,23 @@ export default {
                 );
 
                 const path = response.data.path;
+                const refreshed = response.data.path_was_refreshed === true;
                 this.selectedPeerPath = path ?? null;
 
-                if(path){
+                if(path && refreshed){
                     const hops = path.hops === 0 || path.hops === 1
                         ? "direct"
                         : `${path.hops} hops away`;
-                    DialogUtils.alert(`Path found: ${hops}`
+                    DialogUtils.alert(`Path refreshed: ${hops}`
                         + (path.next_hop_interface ? `\nVia ${path.next_hop_interface}` : ""));
+                } else if(path){
+                    // the request went out and nothing came back, so the route on
+                    // screen is the one we already had -- say so rather than
+                    // presenting it as a fresh answer
+                    DialogUtils.alert("No reply to the path request."
+                        + "\n\nStill showing the route already known, which may be out of date."
+                        + " Wait a minute before trying again: a transport node batches"
+                        + " repeat requests for the same peer for up to 45 seconds.");
                 } else {
                     DialogUtils.alert("No path to this peer. Nothing on the network answered the request."
                         + "\n\nThey may be offline, or out of reach of any transport node you can see.");
