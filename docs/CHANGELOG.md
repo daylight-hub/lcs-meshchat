@@ -3,6 +3,43 @@
 Version history for LCS MeshChat. The release workflow reads the
 section matching the version being built and uses it as the release body.
 
+### What's new in v2.0.6
+
+**A failed opportunistic send now escalates to a link before falling back to a
+propagation node.** This is the rung that makes a multi-hop mesh recover without
+waiting for the far side to announce, and MeshChat did not have it.
+
+A path request cannot cross a hop. The first transport node holding any entry
+answers it from its own cache and stops it — `Transport.py:3459` precedes and
+excludes the recursive search at `3531` — so it never reaches a radio and never
+tests the route.
+
+A failed link does cross. When a transport node relays a `LINKREQUEST` and the
+proof never comes back, `Transport.jobs()` takes the `lr_taken_hops == 1` branch,
+records the interface the request arrived on as `blocked_if`, and
+`handle_disovery_path_requests` then asks on every *other* interface
+(`Transport.py:1260-1263`). For a gateway bridging a local network to a radio,
+"every other interface" is the radio. The link failure is what provokes the
+network into looking.
+
+MeshChat sends opportunistically whenever no link is up and a ratchet is known,
+which is the common case. Opportunistic delivery builds no link, so the transport
+node never gets a link table entry and that rediscovery never fires. The ladder
+ran opportunistic, path request, propagation, and none of those three reaches
+past the first hop — which is why the modem stayed silent while messages failed.
+The ladder is now opportunistic, link, path request, propagation. It can be
+turned off with `direct_link_on_send_failure_enabled`.
+
+**A path request no longer risks destroying the cached announce behind the route
+it is refreshing.** `clean_announce_cache()` deletes every cached announce the
+path table does not reference, and runs every five minutes. Dropping the entry
+left its announce unreferenced, so a cleaning pass landing in that window deleted
+the file permanently, and restoring the entry afterwards left it pointing at
+nothing. That is the state where a node answers a path request with neither a
+reply nor a search, because `answered = True` is set at `3463` before the cache
+lookup is checked at `3466`. The announce is now read before the drop and put
+back with the entry.
+
 ### What's new in v2.0.5
 
 **Reloading an AutoInterface no longer throws away every route learned on it.**

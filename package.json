@@ -1,6 +1,6 @@
 {
   "name": "lcs-meshchat",
-  "version": "2.0.5",
+  "version": "2.0.6",
   "description": "LCS MeshChat - a Liberty Communication Systems distribution of Reticulum MeshChat",
   "main": "electron/main.js",
   "scripts": {

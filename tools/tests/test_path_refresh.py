@@ -112,10 +112,23 @@ class Harness:
         ast.fix_missing_locations(mod)
         exec(compile(mod, "<meshchat>", "exec"), ns)  # noqa: S102
 
+        # The cached announce is held open across the drop, so the five-minute
+        # cache cleaner cannot delete it while the entry is unreferenced. The
+        # filesystem side is covered separately; here it only needs to be
+        # callable, and to happen in the right order.
+        def cached_announce_for(entry):
+            self.events.append("read_cache")
+            return ("/cache/announce", b"announce")
+
+        def restore_cached_announce(cached):
+            self.events.append("restore_cache")
+
         obj = types.SimpleNamespace(
             reticulum=self.reticulum,
             PATH_REFRESH_SETTLE_SECONDS=0.5,
             PATH_REFRESH_POLL_SECONDS=0.01,
+            cached_announce_for=cached_announce_for,
+            restore_cached_announce=restore_cached_announce,
         )
         return asyncio.run(ns["refresh_path"](obj, DEST, timeout))
 
@@ -124,7 +137,13 @@ class Harness:
 h = Harness(answers_after=1)
 result = h.run()
 check("a known path is dropped before anything is asked of the network",
-      h.events[:2] == ["drop", "request"])
+      h.events[:3] == ["read_cache", "drop", "request"])
+# The cached announce has to be read while the entry still references it.
+# clean_announce_cache() deletes any announce the path table does not point at
+# and runs every five minutes, so reading after the drop could find it already
+# gone -- and then the restore would put back an entry pointing at nothing.
+check("and the cached announce is read before the drop, not after",
+      h.events.index("read_cache") < h.events.index("drop"))
 check("exactly one request goes out, since a transport node batches repeats",
       h.requested == 1)
 check("a reply after the drop is reported as a refresh", result is True)
@@ -173,5 +192,64 @@ check("a drop that does not take effect still sends a request",
 check("and falls back to the optimistic answer rather than a false negative",
       result is True)
 
-print("\n{} passed, {} failed".format(len(ok), len(fail)))
-raise SystemExit(1 if fail else 0)
+# --- the escalation rung -----------------------------------------------------
+#
+# A path request is answered from cache by the first transport node that holds
+# an entry (Transport.py:3459, which precedes and excludes the recursive search
+# at 3531), so it never crosses a hop. A failed link does: the transport node
+# that relayed the LINKREQUEST takes the lr_taken_hops == 1 branch when the
+# proof never arrives, and handle_disovery_path_requests then asks on every
+# interface except the one it came in on (Transport.py:1260-1263). Opportunistic
+# delivery builds no link, so none of that fires.
+
+import ast as _ast
+
+_tree = _ast.parse((ROOT / "meshchat.py").read_text(encoding="utf-8"))
+_cls = next(n for n in _ast.walk(_tree)
+            if isinstance(n, _ast.ClassDef) and n.name == "ReticulumMeshChat")
+_funcs = {n.name: n for n in _cls.body
+          if isinstance(n, (_ast.FunctionDef, _ast.AsyncFunctionDef))}
+
+
+def _body(name):
+    return _ast.unparse(_funcs[name]) if name in _funcs else ""
+
+
+print()
+check("method present: send_failed_message_over_direct_link",
+      "send_failed_message_over_direct_link" in _funcs)
+
+_failed = _body("on_lxmf_sending_failed")
+check("a failed opportunistic send escalates to a link",
+      "send_failed_message_over_direct_link" in _failed)
+check("only opportunistic sends escalate, since a link already failed otherwise",
+      "LXMF.LXMessage.OPPORTUNISTIC" in _failed)
+check("the escalation is tried before the path request, which cannot cross a hop",
+      _failed.index("send_failed_message_over_direct_link")
+      < _failed.index("queue_failed_message_for_path_request"))
+check("an already-propagated message is not escalated back to a link",
+      "not already_propagated" in _failed)
+check("the rung can be turned off",
+      "direct_link_on_send_failure_enabled" in _failed)
+
+_escalate = _body("send_failed_message_over_direct_link")
+check("the escalation switches the delivery method to DIRECT",
+      "LXMF.LXMessage.DIRECT" in _escalate)
+check("and resets the LXMF send state so the attempt actually happens",
+      "packed = None" in _escalate and "delivery_attempts = 0" in _escalate)
+check("propagation stays armed, so this inserts a rung rather than replacing one",
+      "try_propagation_on_fail" not in _escalate)
+check("the same message object is re-sent, so nothing is duplicated",
+      "handle_outbound" in _escalate)
+
+_slot = _body("path_entry_packet_slot")
+check("the announce hash slot is located rather than hardcoded",
+      "HASHLENGTH" in _slot and "IDX_PT_PACKET" not in _slot)
+check("and is distinguished from the truncated hashes in the same entry",
+      "len(value) == RNS.Identity.HASHLENGTH // 8" in _slot)
+
+print(f"\n{len(ok)} passed, {len(fail)} failed")
+if fail:
+    for f in fail:
+        print("  FAILED: " + f)
+    sys.exit(1)

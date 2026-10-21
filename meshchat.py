@@ -3925,6 +3925,33 @@ class ReticulumMeshChat:
             # at the recipient would be aimed at the wrong destination.
             already_propagated = getattr(lxmf_message, "desired_method", None) == LXMF.LXMessage.PROPAGATED
 
+            # LCS: an opportunistic send that failed is escalated to a link before
+            # anything else is tried, because the link attempt is the only thing
+            # here that reaches past the first hop.
+            #
+            # A path request cannot. The first transport node holding any entry
+            # answers it from its own cache and stops it (Transport.py:3459,
+            # which precedes and excludes the recursive search at 3531), so it
+            # never reaches the radio and never tests the route.
+            #
+            # A failed link does reach. When a transport node relays a
+            # LINKREQUEST and the proof never comes back, Transport.jobs() takes
+            # the lr_taken_hops == 1 branch, sets blocked_if to the interface the
+            # request arrived on, and handle_disovery_path_requests then asks on
+            # every *other* interface (Transport.py:1260-1263). For a Command
+            # Center bridging AutoInterface to a radio, "every other interface"
+            # is the radio. The failure is what provokes the network.
+            #
+            # Opportunistic delivery never builds a link, so the transport node
+            # gets no link table entry and that rediscovery never fires. That is
+            # why an opportunistic-only ladder dies quietly with the modem silent.
+            # Escalating costs one link attempt and buys the one mechanism in
+            # Reticulum that crosses hops without waiting for an announce.
+            if (self.config.direct_link_on_send_failure_enabled.get()
+                    and not already_propagated
+                    and getattr(lxmf_message, "desired_method", None) == LXMF.LXMessage.OPPORTUNISTIC):
+                self.send_failed_message_over_direct_link(lxmf_message)
+
             # LCS: try to recover a direct route first. Direct delivery is better
             # than propagation when it is achievable -- lower latency, and the
             # message is not left sitting on a third party's node -- so propagation
@@ -3933,7 +3960,7 @@ class ReticulumMeshChat:
             # Reticulum only learns a route when something asks or the peer
             # announces, so without this a message that failed on a stale path sits
             # failed until that peer announces again.
-            if self.config.path_request_on_send_failure_enabled.get() and not already_propagated:
+            elif self.config.path_request_on_send_failure_enabled.get() and not already_propagated:
                 self.queue_failed_message_for_path_request(lxmf_message, wants_propagation)
 
             # LCS: the last rung. A propagated message that failed means the node
@@ -4013,12 +4040,27 @@ class ReticulumMeshChat:
 
         transport = RNS.Transport
         previous_entry = None
+        previous_announce = None
 
         if transport.has_path(destination_hash):
 
             with transport.path_table_lock:
                 entry = transport.path_table.get(destination_hash)
                 previous_entry = list(entry) if entry is not None else None
+
+            # LCS: hold the cached announce open across the drop.
+            #
+            # clean_announce_cache() deletes every cached announce not referenced
+            # by the path table, and it runs every cache_clean_interval (5
+            # minutes). While the entry is dropped the announce behind it is
+            # unreferenced, so a cleaning pass landing in that window deletes the
+            # file for good -- and restoring the entry afterwards then leaves
+            # IDX_PT_PACKET pointing at nothing. That is the state where a node
+            # answers a path request with neither a reply nor a search
+            # (Transport.py:3463 sets answered = True before the cache lookup is
+            # checked at 3466), which is a silent dead end. Keeping a copy means
+            # the restore can put the announce back too.
+            previous_announce = self.cached_announce_for(previous_entry)
 
             self.reticulum.drop_path(destination_hash)
 
@@ -4049,9 +4091,71 @@ class ReticulumMeshChat:
             with transport.path_table_lock:
                 if destination_hash not in transport.path_table:
                     transport.path_table[destination_hash] = previous_entry
+            self.restore_cached_announce(previous_announce)
             print("No path response for {}, restored the previous entry".format(destination_hash.hex()))
 
         return False
+
+    # LCS: read back the announce a path table entry was built from, so it can be
+    # put back if the cache cleaner removes it while the entry is dropped.
+    def cached_announce_for(self, entry):
+
+        if entry is None:
+            return None
+
+        try:
+            slot = self.path_entry_packet_slot(entry)
+            if slot is None:
+                return None
+
+            packet_hash = entry[slot]
+            path = os.path.join(RNS.Reticulum.cachepath, "announces",
+                                RNS.hexrep(packet_hash, delimit=False))
+
+            if not os.path.isfile(path):
+                return None
+
+            with open(path, "rb") as file:
+                return (path, file.read())
+
+        except Exception as e:
+            print("could not read the cached announce: {}".format(e))
+            return None
+
+    def restore_cached_announce(self, cached):
+
+        if cached is None:
+            return
+
+        path, data = cached
+        try:
+            if os.path.isfile(path):
+                return
+
+            os.makedirs(os.path.dirname(path), exist_ok=True)
+            with open(path, "wb") as file:
+                file.write(data)
+
+            print("Put the cached announce back after the path request")
+
+        except Exception as e:
+            print("could not restore the cached announce: {}".format(e))
+
+    # LCS: which slot of a path table entry holds the announce packet hash.
+    #
+    # Upstream calls it IDX_PT_PACKET. Located rather than hardcoded for the same
+    # reason as the interface slot: the entry is a plain list whose layout has
+    # moved between releases. It is the last bytes field, and it is a full hash
+    # rather than the truncated destination-length hashes elsewhere in the entry.
+    @staticmethod
+    def path_entry_packet_slot(entry):
+
+        for index in range(len(entry) - 1, -1, -1):
+            value = entry[index]
+            if isinstance(value, bytes) and len(value) == RNS.Identity.HASHLENGTH // 8:
+                return index
+
+        return None
 
     # LCS: decide whether a destination is due another path request.
     #
@@ -5137,6 +5241,34 @@ class ReticulumMeshChat:
             self.path_persist_pending = False
 
     # sends a previously failed message via a propagation node
+    # LCS: re-send an opportunistic message over a link.
+    #
+    # The rung between opportunistic and propagation. try_propagation_on_fail is
+    # left as it was, so if the link fails too the message still falls through to
+    # the propagation node -- this inserts a step rather than replacing one.
+    #
+    # Worth being explicit about what the link attempt is for. It is not that a
+    # link is a better carrier; a single packet is cheaper and LXMF already
+    # self-heals the local path table on the opportunistic branch. It is that a
+    # LINKREQUEST passing through a transport node creates a link table entry
+    # there, and a link table entry whose proof never arrives is what makes that
+    # node go and ask the rest of the network. Nothing an opportunistic send does
+    # produces that, and nothing a path request does either.
+    def send_failed_message_over_direct_link(self, lxmf_message: LXMF.LXMessage):
+
+        print("Opportunistic delivery to {} failed, escalating to a link".format(
+            lxmf_message.destination_hash.hex(),
+        ))
+
+        lxmf_message.packed = None
+        lxmf_message.delivery_attempts = 0
+        if hasattr(lxmf_message, "next_delivery_attempt"):
+            del lxmf_message.next_delivery_attempt
+
+        lxmf_message.desired_method = LXMF.LXMessage.DIRECT
+
+        self.message_router.handle_outbound(lxmf_message)
+
     def send_failed_message_via_propagation_node(self, lxmf_message: LXMF.LXMessage):
 
         # reset internal message state
@@ -5865,6 +5997,12 @@ class Config:
     telephone_enabled = BoolConfig("telephone_enabled", True)
     message_alert_enabled = BoolConfig("message_alert_enabled", True)
     path_request_on_send_failure_enabled = BoolConfig("path_request_on_send_failure_enabled", True)
+
+    # LCS: escalate a failed opportunistic send to a link before falling back to
+    # a propagation node. The link attempt is the only step in the ladder that
+    # provokes a transport node into asking the rest of the network on our
+    # behalf, so on a multi-hop mesh it is what gets a radio to transmit.
+    direct_link_on_send_failure_enabled = BoolConfig("direct_link_on_send_failure_enabled", True)
     # Off by default since v2.0.3. The saved path table is loaded at startup, so
     # the sweep's job is already done for every peer whose cached announce
     # survived, and what it adds for the rest is a burst of path requests on a
