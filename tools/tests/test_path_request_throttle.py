@@ -290,6 +290,60 @@ check("the retry does not change the delivery method, leaving propagation armed"
 check("the retry resets the LXMF send state the way the propagation fallback does",
       "packed = None" in retry and "delivery_attempts = 0" in retry)
 
+# The last rung is its own case on both outcomes. A message already aimed at a
+# propagation node has to go back out as propagated rather than as whatever it
+# was before, and when the node stays unreachable there is no further fallback
+# to hand it to -- so it used to fall off the bottom of the resolve loop and do
+# nothing at all, which is how a propagated message could vanish silently.
+for name in ["resolve_propagated_message", "propagation_node_stamp_cost"]:
+    check("method present: " + name, name in funcs)
+
+check("an already-propagated message is resolved by its own branch",
+      "already_propagated" in resolve and "resolve_propagated_message" in resolve)
+check("that branch is reached before the generic retry, which would re-send "
+      "a propagated message as whatever it used to be",
+      resolve.index("resolve_propagated_message") < resolve.index("retry_failed_message"))
+check("nothing falls off the bottom of the loop unreported",
+      "else:" in resolve and "leaving the message failed" in resolve)
+
+propagated = body_of("resolve_propagated_message")
+
+check("no route to the node leaves the message failed rather than re-sending",
+      "if not path_found" in propagated and "return" in propagated)
+check("a recovered route re-sends as propagated, not as the original method",
+      "send_failed_message_via_propagation_node" in propagated)
+
+# LXMF will not queue a propagated message until it has built a propagation
+# stamp, and it reads the cost for that out of the node's cached announce rather
+# than off the wire. With no usable copy, process_deferred_stamps fails the
+# message before any link is attempted -- a delivery failure with no delivery
+# tried. Re-sending into that is pointless, so the cost is checked first.
+check("the stamp cost is checked before re-sending, since LXMF fails without it",
+      "propagation_node_stamp_cost" in propagated
+      and propagated.index("propagation_node_stamp_cost")
+      < propagated.index("send_failed_message_via_propagation_node"))
+check("an unusable announce is reported rather than retried into",
+      "stamp_cost is None" in propagated)
+
+cost = body_of("propagation_node_stamp_cost")
+
+check("the cost is read from the same cached announce LXMF reads it from",
+      "recall_app_data" in cost)
+check("and validated the way LXMF validates it, so None means LXMF would fail too",
+      "pn_announce_data_is_valid" in cost)
+check("a missing validator does not crash the failure path",
+      "getattr(LXMF" in cost)
+check("every read is guarded, since this runs inside a failure handler",
+      cost.count("except Exception") >= 2)
+
+handoff = body_of("send_failed_message_via_propagation_node")
+
+check("the first hand-off also warns when no stamp cost is cached",
+      "propagation_node_stamp_cost" in handoff)
+check("and the warning cannot break the hand-off itself",
+      "except Exception" in handoff
+      and handoff.index("except Exception") < handoff.index("handle_outbound"))
+
 
 
 

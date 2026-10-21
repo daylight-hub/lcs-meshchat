@@ -3,6 +3,40 @@
 Version history for LCS MeshChat. The release workflow reads the
 section matching the version being built and uses it as the release body.
 
+### What's new in v2.0.4
+
+**A message handed to a propagation node no longer disappears once the node's
+route is recovered.** v2.0.3 added the missing rung that asks the network about
+the propagation node after a propagated send fails, and that part worked — the
+route came back. What happened next did not. Two things were wrong.
+
+The first is that a message already aimed at a node fell off the bottom of the
+resolution loop. That loop had two outcomes, retry the message or hand it to its
+propagation fallback, and a propagated message has no further fallback to hand it
+to, so when the node stayed unreachable nothing ran at all: no retry, no report,
+nothing in the log. It now has a branch of its own and says what it decided.
+
+The second lost messages even when the route was repaired. LXMF will not queue a
+propagated message until it has built a propagation stamp, and it reads the cost
+for that stamp out of the node's cached announce rather than off the wire. With no
+usable copy of that announce, `process_deferred_stamps` fails the message outright
+— before any link is attempted — so it reads as a delivery failure while no
+delivery was ever tried. LXMF's own recovery here is a bare
+`Transport.request_path` followed by a poll of `recall_app_data`, which is exactly
+the pattern v2.0.3 established cannot work against a destination already in the
+table: the replayed announce is rejected as one already heard, so the cached data
+it waits for never changes and the wait always times out.
+
+Refreshing the node's path drops the entry first, so the announce does land again
+and the cost becomes readable. The retry now reads it before re-sending, and when
+it cannot, says which of the two things is wrong: a route that never came back, or
+a route that came back behind an announce carrying no usable propagation config.
+The first hand-off to a node warns in the same terms, so a failure that was never
+a routing problem is no longer silent.
+
+The retry also goes back out as propagated rather than through the generic retry,
+which would have re-sent it as whatever delivery method it had before.
+
 ### What's new in v2.0.3
 
 **Path requests now actually repair a broken route.** Until now, both the Path

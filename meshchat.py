@@ -4166,18 +4166,103 @@ class ReticulumMeshChat:
     # still happens, which is the whole point of trying direct first.
     #
     # No path: hand each message to its propagation fallback, where it has one.
+    #
+    # A message already aimed at a propagation node is the exception on both
+    # counts, and is handled separately: its retry has to go back out as
+    # propagated rather than as whatever it was before, and when the node stays
+    # unreachable there is no further fallback to hand it to -- this is the end
+    # of the ladder. That case used to fall off the bottom of this loop and do
+    # nothing at all, which is why a propagated message could vanish without a
+    # word once its node had been asked about.
     def resolve_pending_path_request(self, destination_hash: str, path_found: bool):
 
         pending = self.pending_path_requests.pop(destination_hash, [])
 
         for lxmf_message, wants_propagation in pending:
             try:
-                if path_found:
+                already_propagated = getattr(lxmf_message, "desired_method", None) == LXMF.LXMessage.PROPAGATED
+
+                if already_propagated:
+                    self.resolve_propagated_message(lxmf_message, destination_hash, path_found)
+                elif path_found:
                     self.retry_failed_message(lxmf_message)
                 elif wants_propagation:
                     self.send_failed_message_via_propagation_node(lxmf_message)
+                else:
+                    print("No route to {} and no propagation fallback, leaving the message failed".format(
+                        destination_hash,
+                    ))
             except Exception as e:
                 print("failed to resolve message for {}: {}".format(destination_hash, e))
+
+    # LCS: the last rung -- a message already aimed at a propagation node, whose
+    # node we have just asked the network about.
+    #
+    # Re-sending it is not enough on its own, because a propagated message can
+    # fail for a reason that has nothing to do with the route. LXMF builds a
+    # propagation stamp before it will even queue the message, and it takes the
+    # cost for that stamp out of the node's cached announce app data rather than
+    # off the wire. With no usable copy of that announce, process_deferred_stamps
+    # fails the message immediately -- before any link is attempted -- so from the
+    # outside it looks exactly like a delivery failure while no delivery was ever
+    # tried.
+    #
+    # LXMF's own recovery for that is a bare Transport.request_path followed by a
+    # poll of recall_app_data, which is the pattern refresh_path exists to
+    # replace: against a destination we already hold, the replayed announce is
+    # rejected as one we have heard, so the cached app data it waits for can never
+    # change and the wait always times out. Dropping the path first is what makes
+    # the announce land again, which is why this is worth doing here rather than
+    # leaving it to the router.
+    #
+    # So: read the cost ourselves now that the announce has been refreshed. If it
+    # is there, the retry has what it needs. If it is not, say which of the two
+    # things is actually wrong instead of retrying into the same wall.
+    def resolve_propagated_message(self, lxmf_message, destination_hash: str, path_found: bool):
+
+        if not path_found:
+            print("No route to propagation node {}, leaving the message failed".format(destination_hash))
+            return
+
+        stamp_cost = self.propagation_node_stamp_cost(bytes.fromhex(destination_hash))
+
+        if stamp_cost is None:
+            # The route came back but the announce behind it carries no usable
+            # propagation config, so LXMF cannot build a stamp and will fail the
+            # message again the moment it is handed over. Nothing further to try.
+            print("Route to propagation node {} recovered, but its announce carries no usable "
+                  "stamp cost, so a propagated message cannot be built for it".format(destination_hash))
+            return
+
+        print("Route to propagation node {} recovered (stamp cost {}), retrying propagated delivery".format(
+            destination_hash, stamp_cost,
+        ))
+
+        self.send_failed_message_via_propagation_node(lxmf_message)
+
+    # LCS: the stamp cost a propagation node last advertised, or None if we have
+    # no usable copy of its announce.
+    #
+    # Read straight out of the cached announce, the same place LXMF reads it from,
+    # so a None here means LXMF will fail the message rather than send it.
+    def propagation_node_stamp_cost(self, destination_hash: bytes):
+
+        try:
+            app_data = RNS.Identity.recall_app_data(destination_hash)
+        except Exception as e:
+            print("could not recall announce data for propagation node {}: {}".format(
+                destination_hash.hex(), e,
+            ))
+            return None
+
+        is_valid = getattr(LXMF, "pn_announce_data_is_valid", None)
+        if is_valid is None or not is_valid(app_data):
+            return None
+
+        try:
+            return msgpack.unpackb(app_data)[5][0]
+        except Exception:
+            return None
 
     # LCS: send a failed message again over whatever route it was using, on the
     # assumption that the route has just changed. Same reset as the propagation
@@ -4871,6 +4956,21 @@ class ReticulumMeshChat:
         # this message should now be sent via a propagation node
         lxmf_message.desired_method = LXMF.LXMessage.PROPAGATED
         lxmf_message.try_propagation_on_fail = False
+
+        # LCS: say so when this hand-off cannot succeed. LXMF will not queue a
+        # propagated message until it has built a propagation stamp, and it takes
+        # the cost for that out of the node's cached announce -- with no usable
+        # copy it fails the message in process_deferred_stamps, before any link is
+        # attempted. That reads as a delivery failure in the log while no delivery
+        # was tried, so it is worth naming. The node rung in on_lxmf_sending_failed
+        # refreshes the announce and retries once this failure comes back.
+        try:
+            node = self.message_router.get_outbound_propagation_node()
+            if node is not None and self.propagation_node_stamp_cost(node) is None:
+                print("Handing a message to propagation node {}, but no usable stamp cost is cached "
+                      "for it -- expect this attempt to fail until its announce is refreshed".format(node.hex()))
+        except Exception as e:
+            print("could not check the propagation node stamp cost: {}".format(e))
 
         # resend message
         self.message_router.handle_outbound(lxmf_message)
