@@ -3,6 +3,45 @@
 Version history for LCS MeshChat. The release workflow reads the
 section matching the version being built and uses it as the release body.
 
+### What's new in v2.0.5
+
+**Reloading an AutoInterface no longer throws away every route learned on it.**
+This was introduced in v2.0.3 by the link-change reload itself, and it is the
+reason messages worked for a while after a restart and then stopped until an
+announce was sent by hand.
+
+`Transport.jobs()` culls every path table entry whose attached interface has
+left `Transport.interfaces` — "removed since the attached interface no longer
+exists" — and `Reticulum._reload_interface` is a detach followed by an attach,
+so the interface object every entry points at is gone within a second of the
+reload. A restart survives this because the path table is read back from storage
+inside `Transport.start`; a reload has nothing behind it, so the routes were
+simply gone. MeshChat then persisted the emptied table, making the loss
+permanent.
+
+The reload now snapshots the affected entries first and rebinds them afterwards.
+AutoInterface does not carry traffic itself — its `process_outgoing` is a no-op —
+so entries are rebound to the respawned peer they were actually learned through,
+matched on its local interface name and link-local address, and only once that
+peer has been rediscovered. A route whose peer did not come back is left
+dropped, because it genuinely is gone, and anything relearned while waiting wins
+over the snapshot. Saving the path table is suspended until the restore
+finishes. The interface slot in each entry is located by type rather than by a
+fixed offset, since that layout has moved between RNS releases and writing the
+wrong field would corrupt routing silently.
+
+**A reload is now followed by an announce.** Every peer lost its route to us at
+the moment the interface was detached, and a path request cannot repair that — it
+asks about a destination and says nothing about the asker. Announcing is what
+makes this node reachable again so the far side can answer at all, which is
+exactly why sending one by hand fixed things.
+
+**Auto-announce now defaults to 3 hours, down from 6.** Routes back to this node
+are lost on interface churn, not only on timeout, so six hours left long windows
+in which nothing on the mesh could reach us. Liberty Chat announces every three
+hours; matching it stops the two drifting apart. Only affects installs that never
+changed the setting.
+
 ### What's new in v2.0.4
 
 **A message handed to a propagation node no longer disappears once the node's

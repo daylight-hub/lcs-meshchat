@@ -87,6 +87,12 @@ class ReticulumMeshChat:
         # {"strikes": <consecutive bad checks>, "reloads": [<unix times>]}
         self.autointerface_state = {}
 
+        # LCS: set while a reload is rebuilding an interface and its routes are
+        # being put back. The path table is deliberately wrong during that window
+        # -- RNS culls every entry learned on the old interface object -- so
+        # persisting it would write the loss to disk and make it permanent.
+        self.path_restore_in_progress = False
+
         # the file the running identity was loaded from, so it can be replaced by
         # the identity reset. None when the identity came from --identity-base64,
         # which has no file to rewrite.
@@ -4510,6 +4516,11 @@ class ReticulumMeshChat:
             if self.reticulum.is_connected_to_shared_instance:
                 return
 
+            # an interface is being rebuilt, so the table is missing every route
+            # that was learned on it. Writing now would make that loss permanent.
+            if self.path_restore_in_progress:
+                return
+
             # a timer is already waiting, and it will cover this announce too
             if self.path_persist_pending:
                 return
@@ -4807,6 +4818,160 @@ class ReticulumMeshChat:
 
     # LCS: the reload itself, shared by the link-change path and the staleness
     # path so both are rate limited and logged the same way.
+    # LCS: how long to wait for AutoInterface to find its peers again after a
+    # reload, before giving up on restoring the routes that were learned
+    # through them. Peering is advertised on a timer, so this has to cover a
+    # full discovery round rather than a round trip.
+    AUTOINTERFACE_PATH_RESTORE_TIMEOUT_SECONDS = 30
+    AUTOINTERFACE_PATH_RESTORE_POLL_SECONDS = 0.5
+
+    # LCS: which slot of a path table entry holds the interface it was learned
+    # on, found by type rather than by a fixed offset.
+    #
+    # Upstream calls it IDX_PT_RVCD_IF, but the entry is a plain list whose
+    # layout has moved between RNS releases, and writing the wrong field here
+    # would corrupt routing silently instead of failing where it could be seen.
+    @staticmethod
+    def path_entry_interface_slot(entry):
+
+        for index, value in enumerate(entry):
+            if isinstance(value, RNS.Interfaces.Interface.Interface):
+                return index
+
+        return None
+
+    # LCS: the identity of a spawned AutoInterface peer, stable across a reload.
+    #
+    # AutoInterface does not carry traffic itself -- its process_outgoing is a
+    # no-op -- and spawns one AutoInterfacePeer per discovered neighbour, which
+    # is what actually transmits and what path entries point at. A peer is
+    # identified by the local interface it was heard on and its link-local
+    # address, both of which survive a rebuild of the parent.
+    @staticmethod
+    def autointerface_peer_key(interface):
+
+        addr = getattr(interface, "addr", None)
+        ifname = getattr(interface, "ifname", None)
+
+        if addr is None or ifname is None:
+            return None
+
+        return (str(ifname), str(addr))
+
+    # LCS: the routes a reload of this interface is about to destroy.
+    #
+    # Transport.jobs() culls every path table entry whose attached interface has
+    # left Transport.interfaces -- "removed since the attached interface no
+    # longer exists" -- and a reload is a detach followed by an attach, so every
+    # route learned through the old object goes within seconds of the reload.
+    # The path table is only read from storage inside Transport.start, so unlike
+    # a restart a reload has nothing behind it to recover from.
+    def snapshot_paths_for_interface(self, parent) -> dict:
+
+        snapshot = {}
+
+        try:
+            with RNS.Transport.path_table_lock:
+                for destination_hash, entry in RNS.Transport.path_table.items():
+
+                    slot = self.path_entry_interface_slot(entry)
+                    if slot is None:
+                        continue
+
+                    interface = entry[slot]
+                    if interface is not parent and getattr(interface, "parent_interface", None) is not parent:
+                        continue
+
+                    key = self.autointerface_peer_key(interface)
+                    if key is None:
+                        # learned on the parent itself, which cannot transmit, so
+                        # there is no peer to rebind it to
+                        continue
+
+                    snapshot[destination_hash] = (list(entry), slot, key)
+
+        except Exception as e:
+            print("could not snapshot paths for \"{}\": {}".format(getattr(parent, "name", "?"), e))
+
+        return snapshot
+
+    # LCS: the peers an AutoInterface currently has, keyed the way a snapshot is.
+    def spawned_peer_interfaces(self, parent) -> dict:
+
+        peers = {}
+
+        for interface in list(getattr(parent, "spawned_interfaces", {}).values()):
+            key = self.autointerface_peer_key(interface)
+            if key is not None:
+                peers[key] = interface
+
+        return peers
+
+    # LCS: put back the routes the reload destroyed, once their peers are back.
+    #
+    # A route is only restored if the peer it was learned through has been
+    # rediscovered, because that peer object is the thing that transmits. An
+    # entry rebound to a peer that is present in Transport.interfaces survives
+    # the cull, which is the same rebinding Transport.start does when it
+    # resolves a stored entry at startup. A route whose peer did not come back
+    # is genuinely gone and is left dropped.
+    #
+    # Anything relearned while we waited wins: a fresh announce is better than a
+    # snapshot taken before the network changed.
+    async def restore_paths_after_reload(self, parent_name: str, snapshot: dict) -> int:
+
+        if not snapshot:
+            return 0
+
+        wanted = set(key for (_, _, key) in snapshot.values())
+        deadline = time.time() + self.AUTOINTERFACE_PATH_RESTORE_TIMEOUT_SECONDS
+
+        while time.time() < deadline:
+            parent = self.find_autointerface_by_name(parent_name)
+            if parent is not None and wanted.issubset(self.spawned_peer_interfaces(parent).keys()):
+                break
+            await asyncio.sleep(self.AUTOINTERFACE_PATH_RESTORE_POLL_SECONDS)
+
+        parent = self.find_autointerface_by_name(parent_name)
+        if parent is None:
+            print("AutoInterface \"{}\" did not come back, so {} route(s) could not be "
+                  "restored".format(parent_name, len(snapshot)))
+            return 0
+
+        peers = self.spawned_peer_interfaces(parent)
+        restored = 0
+        lost = 0
+
+        with RNS.Transport.path_table_lock:
+            for destination_hash, (entry, slot, key) in snapshot.items():
+
+                if destination_hash in RNS.Transport.path_table:
+                    continue
+
+                interface = peers.get(key)
+                if interface is None:
+                    lost += 1
+                    continue
+
+                entry[slot] = interface
+                RNS.Transport.path_table[destination_hash] = entry
+                restored += 1
+
+        print("Restored {} route(s) across the reload of AutoInterface \"{}\"{}".format(
+            restored, parent_name,
+            ", {} peer(s) did not return".format(lost) if lost else "",
+        ))
+
+        return restored
+
+    def find_autointerface_by_name(self, name: str):
+
+        for autointerface in self.find_autointerfaces():
+            if getattr(autointerface, "name", None) == name:
+                return autointerface
+
+        return None
+
     async def reload_autointerface(self, name: str, reason: str, now: float,
                                    link_change: bool = False) -> bool:
 
@@ -4825,16 +4990,43 @@ class ReticulumMeshChat:
         state["link_signature"] = None
 
         print("Reloading AutoInterface \"{}\" to recover: {}".format(name, reason))
+
+        # Take the routes before the interface goes, because the cull that
+        # removes them runs within a second of the detach and there is nothing
+        # on disk behind a reload to recover them from.
+        parent = self.find_autointerface_by_name(name)
+        snapshot = self.snapshot_paths_for_interface(parent) if parent is not None else {}
+
+        # The path table is deliberately wrong from here until the restore
+        # finishes, so keep it out of the saved copy.
+        self.path_restore_in_progress = True
+
         try:
             # blocking: tears down sockets and rebuilds the interface
             result = await asyncio.to_thread(self.reticulum.reload_interface, name)
             if result:
                 print("AutoInterface \"{}\" reloaded".format(name))
+                await self.restore_paths_after_reload(name, snapshot)
+
+                # Every node that was peered with the old interface lost its
+                # route to us at the same moment we lost ours to them, and a
+                # path request cannot fix that -- it asks about a destination,
+                # and says nothing about the asker. Announcing is what makes us
+                # reachable again, so the far side can answer at all.
+                try:
+                    await self.announce()
+                except Exception as e:
+                    print("could not announce after reloading \"{}\": {}".format(name, e))
+
                 return True
+
             print("AutoInterface \"{}\" reload was refused by Reticulum "
                   "(interface management may be disabled)".format(name))
         except Exception as e:
             print("AutoInterface \"{}\" reload failed: {}".format(name, e))
+        finally:
+            self.path_restore_in_progress = False
+            self.schedule_path_table_persist()
 
         return False
 
@@ -5647,7 +5839,14 @@ class Config:
     database_version = IntConfig("database_version", None)
     display_name = StringConfig("display_name", "Anonymous Peer")
     auto_announce_enabled = BoolConfig("auto_announce_enabled", True)
-    auto_announce_interval_seconds = IntConfig("auto_announce_interval_seconds", 21600)
+    # LCS: 3 hours, down from 6. An announce is the only thing that installs a
+    # route back to us on the rest of the mesh -- a path request asks about a
+    # destination and says nothing about the asker -- and those routes are lost
+    # whenever a peer's interface churns, not just when they time out. Six hours
+    # left long windows where the far side could not answer us at all. Liberty
+    # Chat announces every 3 hours, so this also stops the two drifting apart.
+    # Only affects installs that never set it; a saved value still wins.
+    auto_announce_interval_seconds = IntConfig("auto_announce_interval_seconds", 10800)
     last_announced_at = IntConfig("last_announced_at", None)
     theme = StringConfig("theme", "light")
     auto_resend_failed_messages_when_announce_received = BoolConfig("auto_resend_failed_messages_when_announce_received", True)
