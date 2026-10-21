@@ -93,6 +93,12 @@ class ReticulumMeshChat:
         # persisting it would write the loss to disk and make it permanent.
         self.path_restore_in_progress = False
 
+        # LCS: when we last announced because a peer could not be reached.
+        # Keyed by peer, plus a global floor so a batch of unreachable peers
+        # cannot turn into a burst of announces.
+        self.announce_for_unreachable_at = {}
+        self.last_unreachable_announce_at = 0
+
         # the file the running identity was loaded from, so it can be replaced by
         # the identity reset. None when the identity came from --identity-base64,
         # which has no file to rewrite.
@@ -2413,6 +2419,58 @@ class ReticulumMeshChat:
                 "path_was_refreshed": path_was_refreshed,
             })
 
+        # LCS: ask the network for a route and then actually try to use it.
+        #
+        # This replaces the Discover Path button, which could not do the job it
+        # appeared to do. A path request is answered by the first transport node
+        # holding any entry, from its own cache (Transport.py:3459, which
+        # precedes and excludes the recursive search at 3531). It never crosses a
+        # hop, never reaches a radio, and never tests the route -- a stale entry
+        # answers exactly as confidently as a live one.
+        #
+        # A link attempt does cross. When a transport node relays a LINKREQUEST
+        # whose proof never comes back, Transport.jobs() takes the
+        # lr_taken_hops == 1 branch and handle_disovery_path_requests then asks
+        # on every interface except the one it arrived on (1260-1263) -- which on
+        # a gateway bridging a local network to a radio is the radio. So the link
+        # is attempted even when no path came back: the failure is the point, and
+        # refusing to try because has_path is false throws away the only lever
+        # that reaches past the first hop.
+        @routes.post("/api/v1/destination/{destination_hash}/link-request")
+        async def index(request):
+
+            destination_hash_hex = request.match_info.get("destination_hash", "")
+            destination_hash = bytes.fromhex(destination_hash_hex)
+
+            timeout_seconds = int(request.query.get("timeout", 15))
+
+            path_was_known = RNS.Transport.has_path(destination_hash)
+            path_was_refreshed = await self.refresh_path(destination_hash, timeout_seconds)
+
+            link_established, link_error = await self.probe_link(destination_hash, timeout_seconds)
+
+            announced = False
+            if not link_established:
+                # Nothing we can ask for will help now, so make ourselves
+                # reachable and let their side open the link instead.
+                announced = await self.announce_for_unreachable_peer(destination_hash_hex)
+
+            hops = None
+            next_hop_interface = None
+            if RNS.Transport.has_path(destination_hash):
+                hops = RNS.Transport.hops_to(destination_hash)
+                next_hop_interface = self.reticulum.get_next_hop_if_name(destination_hash)
+
+            return web.json_response({
+                "link_established": link_established,
+                "link_error": link_error,
+                "path_was_known": path_was_known,
+                "path_was_refreshed": path_was_refreshed,
+                "announced": announced,
+                "hops": hops,
+                "next_hop_interface": next_hop_interface,
+            })
+
         # drop path to destination
         @routes.post("/api/v1/destination/{destination_hash}/drop-path")
         async def index(request):
@@ -4157,6 +4215,109 @@ class ReticulumMeshChat:
 
         return None
 
+    LINK_PROBE_POLL_SECONDS = 0.1
+
+    # LCS: build a real link to a peer and report whether it came up.
+    #
+    # Deliberately attempted whether or not a path is known, because a link
+    # request that fails is what makes the transport nodes along the way go and
+    # ask on our behalf. Declining to try when has_path is false would skip the
+    # one thing here that reaches past the first hop.
+    #
+    # A link that establishes is handed to LXMF rather than torn down. That is
+    # the same bookkeeping LXMRouter does for its own delivery links, so the
+    # next message to this peer reuses it instead of paying for another
+    # handshake, and clean_links retires it on inactivity like any other.
+    async def probe_link(self, destination_hash: bytes, timeout_seconds: float):
+
+        try:
+            identity = RNS.Identity.recall(destination_hash)
+            if identity is None:
+                return False, "No identity known for this peer, so a link cannot be built"
+
+            destination = RNS.Destination(
+                identity, RNS.Destination.OUT, RNS.Destination.SINGLE, "lxmf", "delivery")
+
+            link = RNS.Link(destination)
+
+        except Exception as e:
+            return False, "Could not start a link: {}".format(e)
+
+        timeout_at = time.time() + timeout_seconds
+        while link.status not in (RNS.Link.ACTIVE, RNS.Link.CLOSED) and time.time() < timeout_at:
+            await asyncio.sleep(self.LINK_PROBE_POLL_SECONDS)
+
+        if link.status == RNS.Link.ACTIVE:
+            try:
+                link.set_link_established_callback(self.message_router.process_outbound)
+                self.message_router.direct_links[destination_hash] = link
+            except Exception as e:
+                print("could not hand the probed link to LXMF: {}".format(e))
+            return True, None
+
+        try:
+            link.teardown()
+        except Exception:
+            pass
+
+        if link.status == RNS.Link.CLOSED:
+            return False, "The link was refused or closed before it came up"
+
+        return False, "No answer to the link request"
+
+    # LCS: how often an unreachable peer may make us announce.
+    ANNOUNCE_ON_UNREACHABLE_COOLDOWN_SECONDS = 600   # per peer
+    ANNOUNCE_ON_UNREACHABLE_FLOOR_SECONDS = 60       # across all peers
+
+    # LCS: announce ourselves because a peer could not be reached.
+    #
+    # Counter-intuitive but it is the strongest move available. A path request
+    # cannot cross a hop -- the first transport node holding any entry answers it
+    # from cache and stops it -- so when one comes back empty there is nothing
+    # further to ask. An announce is the opposite shape: every node that hears it
+    # rebroadcasts it, and it carries a fresh emission timestamp, so it is
+    # accepted over any existing entry at every hop out to the edge.
+    #
+    # It repairs their route to us rather than ours to them, which turns out to
+    # be enough. LXMF files an inbound identified link under backchannel_links
+    # (LXMRouter.py:1997) and process_outbound will deliver over it (2777-2781),
+    # so once they can reach us, their next message opens a link and anything we
+    # have queued for them rides back out on it. We never need a path to them.
+    #
+    # Throttled per peer, with a floor across all peers so that a batch of
+    # failures cannot become a burst of announces on a slow link.
+    async def announce_for_unreachable_peer(self, destination_hash: str) -> bool:
+
+        if not self.config.announce_on_unreachable_peer_enabled.get():
+            return False
+
+        now = time.time()
+
+        last_for_peer = self.announce_for_unreachable_at.get(destination_hash, 0)
+        if now - last_for_peer < self.ANNOUNCE_ON_UNREACHABLE_COOLDOWN_SECONDS:
+            return False
+
+        if now - self.last_unreachable_announce_at < self.ANNOUNCE_ON_UNREACHABLE_FLOOR_SECONDS:
+            return False
+
+        self.announce_for_unreachable_at[destination_hash] = now
+        self.last_unreachable_announce_at = now
+
+        try:
+            print("Nothing answered for {}, announcing so they can reach us instead".format(
+                destination_hash,
+            ))
+            await self.announce()
+            return True
+        except Exception as e:
+            print("could not announce for unreachable peer {}: {}".format(destination_hash, e))
+            return False
+
+    # LCS: a peer we have heard from is reachable, so it should not be holding a
+    # cooldown that would suppress an announce the next time it goes quiet.
+    def clear_unreachable_announce(self, destination_hash: str):
+        self.announce_for_unreachable_at.pop(destination_hash, None)
+
     # LCS: decide whether a destination is due another path request.
     #
     # Pure and side effect free so it can be tested directly -- getting this wrong
@@ -4256,6 +4417,9 @@ class ReticulumMeshChat:
                 print("Path to {} refreshed, retrying failed messages".format(destination_hash))
             else:
                 print("Nothing answered the path request for {}".format(destination_hash))
+                # Asking got us nowhere, so stop asking and make ourselves
+                # findable instead -- see announce_for_unreachable_peer.
+                await self.announce_for_unreachable_peer(destination_hash)
 
         except Exception as e:
             # never leave messages stuck in the pending queue on an error
@@ -4387,9 +4551,12 @@ class ReticulumMeshChat:
         self.message_router.handle_outbound(lxmf_message)
 
     # LCS: a destination that is reachable again should get a fresh set of attempts
-    # the next time it breaks.
+    # the next time it breaks, and should not be left sitting on an announce
+    # cooldown either -- we have heard from them, so whatever we announced for
+    # is over and the next silence deserves its own announce.
     def clear_path_request_attempts(self, destination_hash: str):
         self.path_request_attempts.pop(destination_hash, None)
+        self.clear_unreachable_announce(destination_hash)
 
     # LCS: how paths are warmed at startup and when the path table is written.
     #
@@ -6003,6 +6170,13 @@ class Config:
     # provokes a transport node into asking the rest of the network on our
     # behalf, so on a multi-hop mesh it is what gets a radio to transmit.
     direct_link_on_send_failure_enabled = BoolConfig("direct_link_on_send_failure_enabled", True)
+
+    # LCS: announce when a peer cannot be reached. A path request stops at the
+    # first transport node that holds an entry, so when one comes back empty
+    # there is nothing further to ask; an announce is rebroadcast by every node
+    # that hears it and repairs their route to us instead, which is enough for
+    # their next message to open a link we can deliver over.
+    announce_on_unreachable_peer_enabled = BoolConfig("announce_on_unreachable_peer_enabled", True)
     # Off by default since v2.0.3. The saved path table is loaded at startup, so
     # the sweep's job is already done for every peer whose cached announce
     # survived, and what it adds for the rest is a burst of path requests on a

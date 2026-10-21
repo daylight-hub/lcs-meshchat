@@ -30,6 +30,34 @@ past the first hop — which is why the modem stayed silent while messages faile
 The ladder is now opportunistic, link, path request, propagation. It can be
 turned off with `direct_link_on_send_failure_enabled`.
 
+**Discover Path is now Link Request.** The old button could not do what it
+appeared to do, for the reason above: a path request is answered from cache by
+the first transport node that holds an entry, so it never crosses a hop, never
+reaches a radio and never tests the route. It reported what your nearest
+transport node believed and nothing more.
+
+The new button refreshes the route and then opens a real link over it —
+*whether or not a path came back*. Declining to try when no path is known would
+throw away the only lever that reaches past the first hop, because a link
+request that dies in transit is exactly what makes the transport nodes along the
+way go looking on your behalf. A link that comes up is handed to LXMF rather
+than torn down, so the next message reuses it instead of paying for another
+handshake. The result is reported honestly: established or not, hop count, and
+the interface it went out on.
+
+**When nothing answers, MeshChat announces instead of giving up.** An empty
+rediscovery means there is nothing further to ask — the request stopped at the
+first hop. An announce is the opposite shape: every node that hears it
+rebroadcasts it, and it carries a fresh emission timestamp, so it is accepted
+over any existing entry at every hop out to the edge. That repairs *their* route
+to this node rather than this node's route to them, which turns out to be
+enough: LXMF files an inbound link under `backchannel_links` and delivers over
+it, so once they can reach you, their next message opens a link and anything
+queued for them goes back out on it. Throttled to one per peer per ten minutes,
+with a one-minute floor across all peers so a batch of failures cannot become a
+burst of announces on a slow link, and cleared as soon as that peer is heard
+from. Turn it off with `announce_on_unreachable_peer_enabled`.
+
 **A path request no longer risks destroying the cached announce behind the route
 it is refreshing.** `clean_announce_cache()` deletes every cached announce the
 path table does not reference, and runs every five minutes. Dropping the entry

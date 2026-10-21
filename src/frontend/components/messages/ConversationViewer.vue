@@ -61,9 +61,9 @@
                 </div>
             </div>
 
-            <!-- LCS: ask the network for a fresh route to this peer -->
+            <!-- LCS: find a route to this peer and prove it by opening a link -->
             <div class="ml-auto my-auto mr-1">
-                <IconButton @click="requestPath" :title="isRequestingPath ? 'Requesting path...' : 'Path Request — ask the network for a route to this peer'">
+                <IconButton @click="requestLink" :title="isRequestingPath ? 'Trying to reach them...' : 'Link Request — find a route to this peer and open a link over it'">
                     <svg v-if="!isRequestingPath" xmlns="http://www.w3.org/2000/svg" fill="none" viewBox="0 0 24 24" stroke-width="1.5" stroke="currentColor" class="w-5 h-5">
                         <path stroke-linecap="round" stroke-linejoin="round" d="M6 12 3.269 3.125A59.769 59.769 0 0 1 21.485 12 59.768 59.768 0 0 1 3.27 20.875L5.999 12Zm0 0h7.5"/>
                     </svg>
@@ -692,13 +692,23 @@ export default {
                 });
             }
         },
-        // LCS: ask the network where this peer is now. force=true drops the entry
-        // we hold before asking -- a stale entry is the usual reason sending fails
-        // while the header still shows a hop count, and Reticulum will not replace
-        // an entry with an announce it has already heard. Dropping it first is also
-        // what lets the server tell a real reply apart from the route it already
-        // had, which is why path_was_refreshed is worth reporting separately.
-        async requestPath() {
+        // LCS: find a route to this peer and then actually use it.
+        //
+        // This replaced a plain path request, which could not do what it looked
+        // like it was doing. A path request is answered by the first transport
+        // node that holds any entry, out of its own cache, so it never crosses a
+        // hop and never tests the route -- a stale entry answers just as
+        // confidently as a live one, and nothing goes out over the radio.
+        //
+        // A link attempt does cross, and the server makes it whether or not a
+        // path came back. When a link request dies in transit the transport
+        // nodes along the way go and ask on our behalf, on every interface
+        // except the one it arrived on, which is what finally gets a request
+        // onto a radio link. The failure is the useful part.
+        //
+        // If the link does not come up, the server announces us instead, so the
+        // far side can reach us even while we cannot reach them.
+        async requestLink() {
 
             if(this.isRequestingPath || !this.selectedPeer){
                 return;
@@ -707,37 +717,52 @@ export default {
             this.isRequestingPath = true;
             try {
 
-                const response = await window.axios.get(
-                    `/api/v1/destination/${this.selectedPeer.destination_hash}/path`,
-                    { params: { request: true, force: true, timeout: 15 } },
+                const response = await window.axios.post(
+                    `/api/v1/destination/${this.selectedPeer.destination_hash}/link-request`,
+                    null,
+                    { params: { timeout: 15 } },
                 );
 
-                const path = response.data.path;
-                const refreshed = response.data.path_was_refreshed === true;
-                this.selectedPeerPath = path ?? null;
+                const data = response.data;
 
-                if(path && refreshed){
-                    const hops = path.hops === 0 || path.hops === 1
-                        ? "direct"
-                        : `${path.hops} hops away`;
-                    DialogUtils.alert(`Path refreshed: ${hops}`
-                        + (path.next_hop_interface ? `\nVia ${path.next_hop_interface}` : ""));
-                } else if(path){
-                    // the request went out and nothing came back, so the route on
-                    // screen is the one we already had -- say so rather than
-                    // presenting it as a fresh answer
-                    DialogUtils.alert("No reply to the path request."
-                        + "\n\nStill showing the route already known, which may be out of date."
-                        + " Wait a minute before trying again: a transport node batches"
-                        + " repeat requests for the same peer for up to 45 seconds.");
+                if(data.hops !== null && data.hops !== undefined){
+                    this.selectedPeerPath = {
+                        hops: data.hops,
+                        next_hop_interface: data.next_hop_interface,
+                    };
                 } else {
-                    DialogUtils.alert("No path to this peer. Nothing on the network answered the request."
-                        + "\n\nThey may be offline, or out of reach of any transport node you can see.");
+                    this.selectedPeerPath = null;
+                }
+
+                const via = data.next_hop_interface ? `\nVia ${data.next_hop_interface}` : "";
+
+                if(data.link_established){
+                    const hops = data.hops === 0 || data.hops === 1
+                        ? "direct"
+                        : `${data.hops} hops away`;
+                    DialogUtils.alert(`Link established: ${hops}.`
+                        + "\n\nThe route is confirmed working, not just known."
+                        + " Your next message will reuse this link." + via);
+                } else {
+                    let message = "Could not open a link to this peer.";
+                    if(data.link_error){
+                        message += `\n\n${data.link_error}.`;
+                    }
+                    message += "\n\nThe attempt was not wasted: a link request that fails"
+                        + " makes the transport nodes it passed through go and look for"
+                        + " this peer themselves, including over any radio they have."
+                        + " That can take a minute or two to come back.";
+                    if(data.announced){
+                        message += "\n\nWe also announced, so they can reach us even while"
+                            + " we cannot reach them. If they send anything, your queued"
+                            + " messages go out on that link.";
+                    }
+                    DialogUtils.alert(message);
                 }
 
             } catch(e) {
                 console.log(e);
-                DialogUtils.alert("Path request failed.");
+                DialogUtils.alert("Link request failed.");
             } finally {
                 this.isRequestingPath = false;
             }

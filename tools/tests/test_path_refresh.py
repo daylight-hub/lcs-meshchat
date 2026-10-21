@@ -209,6 +209,9 @@ _cls = next(n for n in _ast.walk(_tree)
             if isinstance(n, _ast.ClassDef) and n.name == "ReticulumMeshChat")
 _funcs = {n.name: n for n in _cls.body
           if isinstance(n, (_ast.FunctionDef, _ast.AsyncFunctionDef))}
+consts = {t.id: _ast.literal_eval(n.value)
+          for n in _cls.body if isinstance(n, _ast.Assign)
+          for t in n.targets if isinstance(t, _ast.Name)}
 
 
 def _body(name):
@@ -247,6 +250,60 @@ check("the announce hash slot is located rather than hardcoded",
       "HASHLENGTH" in _slot and "IDX_PT_PACKET" not in _slot)
 check("and is distinguished from the truncated hashes in the same entry",
       "len(value) == RNS.Identity.HASHLENGTH // 8" in _slot)
+
+
+
+# --- announce when nothing answers -------------------------------------------
+#
+# A path request stops at the first transport node holding an entry, so an empty
+# result means there is nothing further to ask. An announce is the opposite
+# shape: rebroadcast by every node that hears it, carrying a fresh emission
+# timestamp, so it is accepted over any existing entry at every hop. It repairs
+# their route to us, and LXMF delivers over an inbound link it files under
+# backchannel_links (LXMRouter.py:1997, used at 2777-2781), so their next
+# message carries ours back out.
+
+print()
+for _n in ["announce_for_unreachable_peer", "clear_unreachable_announce", "probe_link"]:
+    check("method present: " + _n, _n in _funcs)
+
+_ann = _body("announce_for_unreachable_peer")
+check("the announce is throttled per peer",
+      "ANNOUNCE_ON_UNREACHABLE_COOLDOWN_SECONDS" in _ann)
+check("and floored across peers, so a batch of failures is not a burst",
+      "ANNOUNCE_ON_UNREACHABLE_FLOOR_SECONDS" in _ann)
+check("the cooldown is recorded before announcing, so a slow announce cannot double-fire",
+      _ann.index("announce_for_unreachable_at[destination_hash] = now")
+      < _ann.index("await self.announce()"))
+check("it can be turned off",
+      "announce_on_unreachable_peer_enabled" in _ann)
+check("a failing announce is reported rather than raised into the caller",
+      "except Exception" in _ann)
+
+_worker = _body("request_path_for_failed_messages")
+check("an empty rediscovery announces instead of just giving up",
+      "announce_for_unreachable_peer" in _worker)
+
+_clear = _body("clear_path_request_attempts")
+check("hearing from a peer clears its announce cooldown too",
+      "clear_unreachable_announce" in _clear)
+
+_probe = _body("probe_link")
+check("the link is attempted even with no path, since the failure is the point",
+      "has_path" not in _probe)
+check("a link that comes up is handed to LXMF rather than wasted",
+      "direct_links[destination_hash] = link" in _probe)
+check("a link that does not come up is torn down",
+      "link.teardown()" in _probe)
+check("a peer with no known identity is reported, not crashed on",
+      "identity is None" in _probe)
+
+check("announce budgets are sane: per-peer well above the global floor",
+      consts["ANNOUNCE_ON_UNREACHABLE_COOLDOWN_SECONDS"]
+      >= consts["ANNOUNCE_ON_UNREACHABLE_FLOOR_SECONDS"] * 5)
+check("and the floor is long enough to protect a slow link",
+      consts["ANNOUNCE_ON_UNREACHABLE_FLOOR_SECONDS"] >= 30)
+
 
 print(f"\n{len(ok)} passed, {len(fail)} failed")
 if fail:
