@@ -2464,6 +2464,9 @@ class ReticulumMeshChat:
             return web.json_response({
                 "link_established": link_established,
                 "link_error": link_error,
+                # reported, not acted on: messages still go opportunistically
+                # first whether or not a link is sitting here
+                "link_active": self.active_delivery_link_available(destination_hash),
                 "path_was_known": path_was_known,
                 "path_was_refreshed": path_was_refreshed,
                 "announced": announced,
@@ -2481,8 +2484,9 @@ class ReticulumMeshChat:
             # convert destination hash to bytes
             destination_hash = bytes.fromhex(destination_hash)
 
-            # drop path
-            self.reticulum.drop_path(destination_hash)
+            # drop path -- off the loop, since this is an RPC round trip when
+            # attached to a shared instance
+            await asyncio.to_thread(self.reticulum.drop_path, destination_hash)
 
             return web.json_response({
                 "message": "Path has been dropped",
@@ -4118,9 +4122,13 @@ class ReticulumMeshChat:
             # (Transport.py:3463 sets answered = True before the cache lookup is
             # checked at 3466), which is a silent dead end. Keeping a copy means
             # the restore can put the announce back too.
-            previous_announce = self.cached_announce_for(previous_entry)
+            previous_announce = await asyncio.to_thread(self.cached_announce_for, previous_entry)
 
-            self.reticulum.drop_path(destination_hash)
+            # LCS: drop_path is a blocking RPC round trip when this instance is
+            # attached to a shared one, and file I/O either way, so it does not
+            # belong on the event loop -- anything that stalls the loop empties
+            # the UI, because every request the frontend makes stalls with it.
+            await asyncio.to_thread(self.reticulum.drop_path, destination_hash)
 
             settle_until = time.time() + self.PATH_REFRESH_SETTLE_SECONDS
             while transport.has_path(destination_hash) and time.time() < settle_until:
@@ -4149,7 +4157,7 @@ class ReticulumMeshChat:
             with transport.path_table_lock:
                 if destination_hash not in transport.path_table:
                     transport.path_table[destination_hash] = previous_entry
-            self.restore_cached_announce(previous_announce)
+            await asyncio.to_thread(self.restore_cached_announce, previous_announce)
             print("No path response for {}, restored the previous entry".format(destination_hash.hex()))
 
         return False
@@ -4238,7 +4246,7 @@ class ReticulumMeshChat:
             destination = RNS.Destination(
                 identity, RNS.Destination.OUT, RNS.Destination.SINGLE, "lxmf", "delivery")
 
-            link = RNS.Link(destination)
+            link = await asyncio.to_thread(RNS.Link, destination)
 
         except Exception as e:
             return False, "Could not start a link: {}".format(e)
@@ -4256,7 +4264,7 @@ class ReticulumMeshChat:
             return True, None
 
         try:
-            link.teardown()
+            await asyncio.to_thread(link.teardown)
         except Exception:
             pass
 
@@ -4383,8 +4391,14 @@ class ReticulumMeshChat:
         )
 
         if not allowed:
-            # not asking again yet, so resolve what is queued using the fallback
+            # Not asking again yet, so resolve what is queued using the
+            # fallback -- but still make ourselves findable. The announce has
+            # its own, longer throttle, so letting a refused request reach it
+            # costs nothing, and it covers the case that matters most: the
+            # budget for this peer is spent, so asking is over and an announce
+            # is the only move left.
             self.resolve_pending_path_request(destination_hash, path_found=False)
+            AsyncUtils.run_async(self.announce_for_unreachable_peer(destination_hash))
             return
 
         self.path_request_attempts[destination_hash] = attempt
@@ -4548,7 +4562,7 @@ class ReticulumMeshChat:
         if hasattr(lxmf_message, "next_delivery_attempt"):
             del lxmf_message.next_delivery_attempt
 
-        self.message_router.handle_outbound(lxmf_message)
+        self.submit_outbound(lxmf_message)
 
     # LCS: a destination that is reachable again should get a fresh set of attempts
     # the next time it breaks, and should not be left sitting on an announce
@@ -5408,6 +5422,67 @@ class ReticulumMeshChat:
             self.path_persist_pending = False
 
     # sends a previously failed message via a propagation node
+    # LCS: is there a link to this peer that is actually up?
+    #
+    # Not the same question as LXMRouter.delivery_link_available, which only
+    # asks whether the hash appears in direct_links or backchannel_links and
+    # never looks at the link's status (LXMRouter.py:761). A link that has
+    # closed, or that never came up, stays in those tables until clean_links
+    # retires it, so the router's answer stays true for a link that cannot carry
+    # anything.
+    #
+    # That matters because it is what picks the delivery method. Believing a
+    # dead link means choosing DIRECT, and DIRECT then spends the full
+    # establishment timeout per hop before it gets anywhere -- the "it takes
+    # forever" case -- when a single opportunistic packet would have arrived.
+    # Only an ACTIVE link is worth preferring over one packet.
+    def active_delivery_link_available(self, destination_hash: bytes) -> bool:
+
+        try:
+            for table in (self.message_router.direct_links, self.message_router.backchannel_links):
+                link = table.get(destination_hash)
+                if link is not None and link.status == RNS.Link.ACTIVE:
+                    return True
+        except Exception as e:
+            print("could not check for an active delivery link: {}".format(e))
+
+        return False
+
+    # LCS: hand a message back to LXMF from somewhere it is safe to block.
+    #
+    # handle_outbound spins on the router's own outbound lock:
+    #
+    #     while not unknown_path_requested and self.outbound_processing_lock.locked():
+    #         time.sleep(0.05)
+    #
+    # That makes calling it directly wrong in both the places we need to.
+    #
+    # From a failed_callback it is a deadlock. fail_message runs inside
+    # process_outbound's `with self.outbound_processing_lock` (LXMRouter.py:2684,
+    # failing at 2761, 2842, 2851 and 2899) and calls the callback
+    # synchronously, so a resubmit from there waits on a lock held by its own
+    # call stack and spins forever -- taking LXMF's outbound thread with it, so
+    # nothing sends again until a restart.
+    #
+    # From the asyncio loop it freezes the web server. The spin is a blocking
+    # sleep, so for as long as process_outbound holds the lock nothing else on
+    # the loop runs, and the UI empties out because every API call it makes
+    # hangs.
+    #
+    # A throwaway thread fixes both: the callback returns at once so the lock is
+    # released, and the waiting happens somewhere that blocking is harmless.
+    def submit_outbound(self, lxmf_message):
+
+        def deliver():
+            try:
+                self.message_router.handle_outbound(lxmf_message)
+            except Exception as e:
+                print("could not hand {} back to LXMF: {}".format(
+                    lxmf_message.destination_hash.hex(), e,
+                ))
+
+        threading.Thread(target=deliver, daemon=True).start()
+
     # LCS: re-send an opportunistic message over a link.
     #
     # The rung between opportunistic and propagation. try_propagation_on_fail is
@@ -5434,7 +5509,7 @@ class ReticulumMeshChat:
 
         lxmf_message.desired_method = LXMF.LXMessage.DIRECT
 
-        self.message_router.handle_outbound(lxmf_message)
+        self.submit_outbound(lxmf_message)
 
     def send_failed_message_via_propagation_node(self, lxmf_message: LXMF.LXMessage):
 
@@ -5464,7 +5539,7 @@ class ReticulumMeshChat:
             print("could not check the propagation node stamp cost: {}".format(e))
 
         # resend message
-        self.message_router.handle_outbound(lxmf_message)
+        self.submit_outbound(lxmf_message)
 
     # upserts the provided lxmf message to the database
     def db_upsert_lxmf_message(self, lxmf_message: LXMF.LXMessage):
@@ -5619,14 +5694,27 @@ class ReticulumMeshChat:
         # determine how to send the message if the user didn't provide a method
         if desired_delivery_method is None:
 
-            # send messages over a direct link by default
+            # LCS: opportunistic first, always, whenever a ratchet is known.
+            #
+            # A single encrypted packet, no handshake, and it is the only
+            # delivery method LXMF self-heals: its drop-and-rediscover lives in
+            # the opportunistic branch alone. If it fails, on_lxmf_sending_failed
+            # escalates to a link, then a path refresh, then propagation, so
+            # nothing is lost by trying the cheap thing first.
+            #
+            # Deliberately not conditioned on whether a link exists. It used to
+            # be, which made a link, once established, the carrier for every
+            # later message -- so pressing Link Request quietly switched the
+            # conversation to DIRECT. The link is there to provoke the network
+            # into finding a route, not to become the route.
+            #
+            # A ratchet is still required, because single-packet delivery
+            # without forward secrecy is not worth the saving. That is not a
+            # reason to wait for a link, though: a peer's ratchet only ever
+            # arrives on an announce from that peer (Identity.py:597), so a link
+            # cannot supply one and holding out for a link gains nothing.
             desired_delivery_method = LXMF.LXMessage.DIRECT
-            if not self.message_router.delivery_link_available(destination_hash) and RNS.Identity.current_ratchet_id(destination_hash) != None:
-
-                # since there's no link established to the destination, it's faster to send opportunistically
-                # this is because it takes several packets to establish a link, and then we still have to send the message over it
-                # oppotunistic mode will send the message in a single packet (if the message is small enough, otherwise it falls back to a direct link)
-                # we will only do this if an encryption ratchet is available, so single packet delivery is more secure
+            if RNS.Identity.current_ratchet_id(destination_hash) != None:
                 desired_delivery_method = LXMF.LXMessage.OPPORTUNISTIC
 
         # create lxmf message
@@ -5681,7 +5769,14 @@ class ReticulumMeshChat:
         lxmf_message.register_failed_callback(self.on_lxmf_sending_failed)
 
         # send lxmf message to be routed to destination
-        self.message_router.handle_outbound(lxmf_message)
+        #
+        # LCS: off the event loop. handle_outbound spins on the router's outbound
+        # lock with a blocking sleep, so calling it here froze the web server for
+        # as long as process_outbound was busy -- which is what emptied the
+        # interfaces, announces and conversations out of the UI mid-send. Awaited
+        # rather than detached, because the packing it does is what gives the
+        # message the hash the database row below is keyed on.
+        await asyncio.to_thread(self.message_router.handle_outbound, lxmf_message)
 
         # upsert lxmf message to database
         self.db_upsert_lxmf_message(lxmf_message)
@@ -6240,8 +6335,12 @@ class NomadnetDownloader:
         )
 
         # create link to destination
+        # LCS: off the loop like every other link setup -- building one
+        # generates an ephemeral keypair and writes a packet, and anything that
+        # stalls the event loop stalls every request the frontend has in flight.
         print("[NomadnetDownloader] establishing new link for request")
-        link = RNS.Link(destination, established_callback=self.link_established)
+        link = await asyncio.to_thread(
+            RNS.Link, destination, established_callback=self.link_established)
 
         # determine when to timeout
         timeout_after_seconds = time.time() + link_establishment_timeout

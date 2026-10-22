@@ -20,6 +20,7 @@ stays silent.
 import ast
 import asyncio
 import pathlib
+import sys
 import time
 import types
 
@@ -242,8 +243,13 @@ check("and resets the LXMF send state so the attempt actually happens",
       "packed = None" in _escalate and "delivery_attempts = 0" in _escalate)
 check("propagation stays armed, so this inserts a rung rather than replacing one",
       "try_propagation_on_fail" not in _escalate)
+# Never inline: fail_message calls this from inside process_outbound's own
+# outbound lock, and handle_outbound spins on that lock, so a direct call here
+# deadlocks LXMF's outbound thread permanently.
 check("the same message object is re-sent, so nothing is duplicated",
-      "handle_outbound" in _escalate)
+      "submit_outbound(lxmf_message)" in _escalate)
+check("and it is resubmitted off-thread, since this runs inside LXMF's own lock",
+      "handle_outbound" not in _escalate)
 
 _slot = _body("path_entry_packet_slot")
 check("the announce hash slot is located rather than hardcoded",
@@ -294,7 +300,7 @@ check("the link is attempted even with no path, since the failure is the point",
 check("a link that comes up is handed to LXMF rather than wasted",
       "direct_links[destination_hash] = link" in _probe)
 check("a link that does not come up is torn down",
-      "link.teardown()" in _probe)
+      "link.teardown" in _probe)
 check("a peer with no known identity is reported, not crashed on",
       "identity is None" in _probe)
 

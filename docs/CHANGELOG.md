@@ -3,6 +3,77 @@
 Version history for LCS MeshChat. The release workflow reads the
 section matching the version being built and uses it as the release body.
 
+### What's new in v2.0.7
+
+**Fixes a hang introduced in 2.0.6 that could stop MeshChat sending entirely.**
+If you are on 2.0.6, update.
+
+`LXMRouter.handle_outbound` waits for the router's own outbound lock with a
+blocking sleep:
+
+```python
+while not unknown_path_requested and self.outbound_processing_lock.locked():
+    time.sleep(0.05)
+```
+
+That made handing a message back to LXMF wrong in both of the places MeshChat
+was doing it.
+
+From a failure handler it was a deadlock. `fail_message` runs *inside*
+`process_outbound`'s `with self.outbound_processing_lock` and calls the failed
+callback synchronously, so 2.0.6's escalation to a link waited on a lock held by
+its own call stack and spun forever — taking LXMF's outbound thread with it.
+After that nothing sent again until a restart, which is why sends hung rather
+than failing.
+
+From the web server it froze the UI. The same spin ran on the asyncio event
+loop, so while `process_outbound` held the lock nothing else on the loop ran,
+every API call the frontend made hung, and the interfaces, announces and
+conversations emptied out of the screen. This one predates 2.0.6 — the original
+send path had always called `handle_outbound` on the loop — but the new rungs
+made it far easier to hit.
+
+Every resubmit now goes out on a worker thread, so the callback returns at once
+and the lock is released. The original send is awaited on a thread instead,
+which keeps the ordering the database row depends on.
+
+Everything else that could stall the loop went the same way: dropping a path
+(an RPC round trip when attached to a shared instance), reading and restoring
+the cached announce around a refresh, and building or tearing down a link — in
+the link probe and in the NomadNet downloader. A test now walks every async
+function in `meshchat.py` and fails if any of them calls a blocking Reticulum or
+LXMF entry point without `asyncio.to_thread`, so this class of freeze cannot
+come back unnoticed.
+
+**Messages always try opportunistic first now, whatever links exist.** The
+delivery method used to depend on whether a link was available, which meant a
+link — once established — became the carrier for every later message, so
+pressing Link Request silently switched that conversation to DIRECT. The link is
+there to provoke the network into finding a route, not to become the route. A
+known ratchet is now the only condition for single-packet delivery, and the
+ladder still escalates to a link, then a path refresh, then propagation if the
+packet fails.
+
+Worth stating because it is the reason this is safe: a peer's ratchet only ever
+arrives on an announce from that peer (`Identity.py:597`), so a link cannot
+supply one and there is nothing to gain by waiting for a link before going
+opportunistic. What a link *can* do is get a route rediscovered — which is the
+whole point of the button, and why it should leave the sending behaviour alone.
+
+**A refused path request now announces too.** The per-peer attempt budget
+stopping us from asking again is exactly when announcing matters most: asking is
+over for that peer, so making ourselves findable is the only move left. The
+announce keeps its own longer throttle, so this costs nothing.
+
+**A remembered link is no longer mistaken for a working one.**
+`LXMRouter.delivery_link_available` only asks whether the peer appears in
+`direct_links` or `backchannel_links`; it never checks the link's status, so a
+link that has closed or never came up keeps answering yes until `clean_links`
+retires it. MeshChat used that to pick the delivery method, so a dead entry
+meant choosing DIRECT and then spending the full establishment timeout per hop
+before getting anywhere — the "direct takes forever" case, while the same
+message sent opportunistically arrived at once. Only an ACTIVE link now counts.
+
 ### What's new in v2.0.6
 
 **A failed opportunistic send now escalates to a link before falling back to a

@@ -284,7 +284,7 @@ check("the queue is removed as it is resolved, so nothing is handled twice",
 retry = body_of("retry_failed_message")
 
 check("the retry re-sends the same message object, so nothing is duplicated",
-      "handle_outbound" in retry)
+      "submit_outbound(lxmf_message)" in retry)
 check("the retry does not change the delivery method, leaving propagation armed",
       "desired_method" not in retry)
 check("the retry resets the LXMF send state the way the propagation fallback does",
@@ -342,7 +342,7 @@ check("the first hand-off also warns when no stamp cost is cached",
       "propagation_node_stamp_cost" in handoff)
 check("and the warning cannot break the hand-off itself",
       "except Exception" in handoff
-      and handoff.index("except Exception") < handoff.index("handle_outbound"))
+      and handoff.index("except Exception") < handoff.index("submit_outbound"))
 
 
 
@@ -432,6 +432,110 @@ check("disk I/O is kept off the event loop",
       "asyncio.to_thread" in persist)
 check("the pending flag is always cleared, so writes cannot stop permanently",
       "finally:" in persist and "path_persist_pending = False" in persist)
+
+
+# ------------------------------------------------------------------------------
+# Resubmitting to LXMF without deadlocking it or freezing the UI.
+#
+# handle_outbound spins on the router's outbound lock with a blocking sleep:
+#
+#     while not unknown_path_requested and self.outbound_processing_lock.locked():
+#         time.sleep(0.05)
+#
+# fail_message runs inside that lock (LXMRouter.py:2684, failing at 2761, 2842,
+# 2851, 2899) and calls failed_callback synchronously, so a resubmit from a
+# failure handler waits on a lock its own call stack holds and spins forever,
+# killing LXMF's outbound thread. On the asyncio loop the same spin freezes the
+# web server, which empties the UI. Neither is allowed to happen again.
+# ------------------------------------------------------------------------------
+
+print()
+check("method present: submit_outbound", "submit_outbound" in funcs)
+check("method present: active_delivery_link_available",
+      "active_delivery_link_available" in funcs)
+
+submit = body_of("submit_outbound")
+check("the resubmit runs on its own thread, not the caller's",
+      "threading.Thread" in submit and "daemon=True" in submit)
+check("and cannot raise into LXMF's outbound thread",
+      "except Exception" in submit)
+
+for name in ["send_failed_message_over_direct_link",
+             "send_failed_message_via_propagation_node",
+             "retry_failed_message"]:
+    b = body_of(name)
+    check("{} resubmits off-thread".format(name), "submit_outbound" in b)
+    check("{} never calls handle_outbound inline".format(name),
+          "handle_outbound" not in b)
+
+source = SOURCE.read_text(encoding="utf-8")
+check("the only direct handle_outbound calls are off the event loop",
+      source.count("message_router.handle_outbound") == 2
+      and "asyncio.to_thread(self.message_router.handle_outbound" in source)
+
+active = body_of("active_delivery_link_available")
+check("an available link means an ACTIVE one, not merely a remembered one",
+      "RNS.Link.ACTIVE" in active)
+check("both link tables are checked, since either can carry a message",
+      "direct_links" in active and "backchannel_links" in active)
+check("a broken router does not stop a message being sent",
+      "except Exception" in active)
+
+send = body_of("send_message")
+# Opportunistic first, always. Conditioning it on link availability made a link,
+# once established, the carrier for every later message, so pressing Link
+# Request silently switched the conversation to DIRECT. The link exists to
+# provoke the network into finding a route, not to become the route.
+check("a known ratchet is the only condition for sending opportunistically",
+      "RNS.Identity.current_ratchet_id" in send
+      and "LXMF.LXMessage.OPPORTUNISTIC" in send)
+check("the choice does not consult link availability at all",
+      "delivery_link_available" not in send)
+
+# A ratchet only ever arrives on an announce from that peer (Identity.py:597,
+# and Destination.py:288 for our own), so a link cannot supply one -- which is
+# why there is nothing to gain by waiting for a link before going opportunistic.
+check("the link-request response reports link state without acting on it",
+      "link_active" in SOURCE.read_text(encoding="utf-8"))
+
+queue = body_of("queue_failed_message_for_path_request")
+check("a refused path request still announces, since asking is over for that peer",
+      "announce_for_unreachable_peer" in queue)
+
+probe = body_of("probe_link")
+check("only a link that came up is registered with LXMF",
+      probe.index("RNS.Link.ACTIVE") < probe.index("direct_links[destination_hash] = link"))
+
+
+# Anything that stalls the asyncio loop stalls every request the frontend has in
+# flight, and the UI renders an empty state -- no interfaces, no announces, no
+# conversations. So no async function may call a blocking RNS/LXMF entry point
+# directly; each must go through asyncio.to_thread.
+import ast as _a
+_src = SOURCE.read_text(encoding="utf-8")
+_lines = _src.splitlines()
+_BLOCKING = ["time.sleep", "handle_outbound", "drop_path", "RNS.Link", "teardown",
+             "cached_announce_for", "restore_cached_announce"]
+_onloop = []
+
+
+class _Loop(_a.NodeVisitor):
+    def visit_AsyncFunctionDef(self, node):
+        for n in _a.walk(node):
+            if isinstance(n, _a.Call):
+                try:
+                    called = _a.unparse(n.func)
+                except Exception:
+                    continue
+                if any(called.endswith(b) for b in _BLOCKING):
+                    if "to_thread" not in _lines[n.lineno - 1]:
+                        _onloop.append("{}:{} {}".format(node.name, n.lineno, called))
+        self.generic_visit(node)
+
+
+_Loop().visit(_a.parse(_src))
+check("no blocking RNS or LXMF call runs on the event loop [{}]".format(
+      ", ".join(_onloop) if _onloop else "clean"), not _onloop)
 
 print(f"\n{len(ok)} passed, {len(fail)} failed")
 if fail:
