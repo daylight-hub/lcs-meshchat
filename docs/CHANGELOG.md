@@ -3,6 +3,94 @@
 Version history for LCS MeshChat. The release workflow reads the
 section matching the version being built and uses it as the release body.
 
+### What's new in v2.0.8
+
+**A stalled send gets to the link attempt in about 25 seconds instead of a
+minute.** When a route is dead, LXMF's opportunistic branch repeats the same
+packet up to five times at ten second intervals, with a drop-and-rediscover and
+a seven second pause folded in, before `fail_message` fires. Only then does the
+escalation to a link begin — and the link attempt is the only step in the whole
+ladder that makes a transport node go and ask the rest of the network on your
+behalf. The most useful step was queued behind the least useful one.
+
+A send that has not landed by the deadline is now taken out of the outbound
+queue and handed straight to the link rung. Nothing below it changes: the path
+refresh, the propagation node and the announce all still run in the same order.
+The deadline is in Settings under Messages, with a Never option that restores
+LXMF's own pacing, and it is worth raising on a slow radio where a working path
+legitimately takes longer than that to answer.
+
+To be clear about what this is not: it is not the Auto resend setting. That one
+only fires when an announce arrives from the peer, and it plays no part in the
+minute a failing send used to take.
+
+**Link Request tries twice.** A link request that goes unanswered is what makes
+the transport nodes it passed through mark their own route unresponsive and
+search on every other interface — which on a gateway bridging a local network
+to a radio is the radio. That search comes back seconds *after* the attempt
+that failed, so reporting failure at that moment described the network as it
+was before the button was pressed. The button now waits for the route to
+change, attempts the link again, and only announces if the second attempt fails
+too. When the second attempt succeeds it says so, because that is the mechanism
+working rather than luck.
+
+The route is tracked by the announce behind the path table entry rather than by
+`has_path`, which stays true throughout a rediscovery and tells you nothing.
+
+**Propagation node auto-select picks the closest node, and keeps looking.** It
+used to adopt the first `lxmf.propagation` announce it ever heard and stop,
+which on startup is close to random. Selection is now by hop count, with the
+most recent announce breaking a tie — the same ordering Liberty Chat uses for
+its relay list — and it is reconsidered on every propagation announce, at
+startup, and when auto-select is switched back on.
+
+A node closer than the one in use takes over, as does any node still announcing
+when the one in use has been quiet for three hours or has been switched off by
+its operator. A node that has gone quiet is dropped from the ranking rather
+than kept at the top for being nearby.
+
+Equal distance deliberately does **not** cause a switch. Two nodes the same
+number of hops away would otherwise hand the slot back and forth every time
+they announced, and each handover cancels an in-flight sync and resets the sync
+clock. Switches are also held off for five minutes after the last one, and
+while a sync is running. Picking a node by hand still turns auto-select off and
+is never overridden, and the switching behaviour has its own toggle in
+Settings.
+
+**Propagation nodes show the name they advertise.** Operators name the node
+itself, and that name rides along in the announce metadata — it is what Liberty
+Chat displays. MeshChat could not reach it, because the announce parser was
+still reading the three field layout LXMF used years ago against announces that
+have carried seven fields since 0.5.
+
+Everything it read had moved. Field 0 is the legacy-propagation-support flag,
+hardcoded `False`, and it was being read as "enabled" — so **every modern
+propagation node was displayed as Disabled by Operator**. Field 2 is the real
+enabled flag, and it was being read as the per-transfer limit, so the limit
+displayed as `True` or `False`. Only the timebase happened to still line up.
+
+The parser now reads the current layout, falls back to the old one for
+announces that use it, and pulls the node's name and stamp cost out of the
+metadata. The propagation nodes page shows the advertised name, the operator
+name beneath it when both exist, and how many hops away the node is. The
+settings page shows the same for the node in use, so the hash in the box is
+identifiable.
+
+**Ping no longer gives up on a route it could repair.** It asked with a bare
+`request_path` and waited, which cannot replace an entry Reticulum already
+holds, then reported "could not find path to destination" when what had
+actually failed was recalling the peer's identity. It now goes through
+`refresh_path` when no route is known, leaves an existing route alone — it is
+measuring that route, so expiring it would measure a different one — and says
+what actually went wrong.
+
+Ping and Link Request are not duplicates, and both are worth keeping. Ping
+sends one packet over whatever route exists and reports round trip time, signal
+and hops: it measures. Link Request repairs the route and proves it by opening
+a link: it fixes.
+
+353 checks across eight suites.
+
 ### What's new in v2.0.7
 
 **Fixes a hang introduced in 2.0.6 that could stop MeshChat sending entirely.**

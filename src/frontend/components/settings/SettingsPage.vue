@@ -113,6 +113,45 @@
                         <div class="text-sm text-gray-700 dark:text-gray-300">When enabled, messages that fail to send will be sent to the configured propagation node.</div>
                     </div>
 
+                    <!-- LCS: how long the opportunistic attempt gets before the ladder moves on -->
+                    <div class="p-2">
+                        <label class="block mb-1 text-sm font-medium text-gray-900 dark:text-gray-100">Escalate a stalled send after</label>
+                        <div>
+                            <select v-model="config.opportunistic_escalation_seconds" @change="onOpportunisticEscalationSecondsChange" class="bg-gray-50 dark:bg-zinc-700 border border-gray-300 dark:border-zinc-600 text-gray-900 dark:text-gray-100 text-sm rounded-lg focus:ring-blue-500 focus:border-blue-500 dark:focus:ring-blue-600 dark:focus:border-blue-600 block w-full p-2.5">
+                                <option :value="0">Never (let LXMF finish its retries)</option>
+                                <option :value="15">15 seconds</option>
+                                <option :value="25">25 seconds (recommended)</option>
+                                <option :value="40">40 seconds</option>
+                                <option :value="60">60 seconds</option>
+                            </select>
+                        </div>
+                        <div class="mt-1 text-sm text-gray-700 dark:text-gray-300">
+                            Messages go out opportunistically first, as a single packet, which is
+                            the cheapest way to deliver when the route is good. When it is not,
+                            LXMF spends around a minute repeating that packet before it gives up
+                            and the link attempt begins — and the link attempt is the only step
+                            that makes a transport node go looking on your behalf. This cuts the
+                            repeats short and gets to it sooner. Raise it if a working radio path
+                            legitimately takes longer than this to answer.
+                        </div>
+                    </div>
+
+                    <div class="p-2">
+                        <div class="flex items-start">
+                            <div class="flex items-center h-5">
+                                <input v-model="config.link_request_retry_enabled" @change="onLinkRequestRetryEnabledChange" type="checkbox" class="w-4 h-4 border border-gray-300 dark:border-zinc-600 rounded bg-gray-50 dark:bg-zinc-700 focus:ring-3 focus:ring-blue-300 dark:focus:ring-blue-600">
+                            </div>
+                            <label class="ml-2 text-sm font-medium text-gray-900 dark:text-gray-100">Retry the Link Request button</label>
+                        </div>
+                        <div class="text-sm text-gray-700 dark:text-gray-300">
+                            A link request that goes unanswered is what makes the transport nodes
+                            along the way search for the peer, so the route it finds arrives
+                            seconds after the attempt that failed. With this on, the button waits
+                            for that and tries once more instead of reporting the state of the
+                            network from before you pressed it.
+                        </div>
+                    </div>
+
                     <div class="p-2">
                         <div class="flex items-start">
                             <div class="flex items-center h-5">
@@ -231,13 +270,44 @@
                             <input v-model="config.auto_select_propagation_node" @change="onAutoSelectPropagationNodeChange" type="checkbox" class="w-4 h-4 border border-gray-300 dark:border-zinc-600 rounded bg-gray-50 dark:bg-zinc-700 focus:ring-3 focus:ring-blue-300 dark:focus:ring-blue-600">
                             <label class="ml-2 text-sm font-medium text-gray-900 dark:text-gray-100">Auto Select Propagation Node</label>
                         </div>
-                        <div class="text-sm text-gray-700 dark:text-gray-300">When enabled, LCS MeshChat automatically uses the first propagation node it discovers on the network. Setting a preferred node below turns this off.</div>
+                        <div class="text-sm text-gray-700 dark:text-gray-300">
+                            When enabled, LCS MeshChat picks the propagation node that is fewest
+                            hops away, using the most recent announce to break a tie. Setting a
+                            preferred node below turns this off.
+                        </div>
+                    </div>
+
+                    <!-- LCS: keep reconsidering, rather than adopting one node forever -->
+                    <div v-if="config.auto_select_propagation_node" class="p-2">
+                        <div class="flex items-center">
+                            <input v-model="config.auto_select_propagation_node_switching_enabled" @change="onAutoSelectPropagationNodeSwitchingEnabledChange" type="checkbox" class="w-4 h-4 border border-gray-300 dark:border-zinc-600 rounded bg-gray-50 dark:bg-zinc-700 focus:ring-3 focus:ring-blue-300 dark:focus:ring-blue-600">
+                            <label class="ml-2 text-sm font-medium text-gray-900 dark:text-gray-100">Switch to a better node while running</label>
+                        </div>
+                        <div class="text-sm text-gray-700 dark:text-gray-300">
+                            Relays go down and routes shift, so the best node at startup is not
+                            always the best one an hour later. With this on, a node that is
+                            closer than the one in use takes over, as does any node still
+                            announcing when the one in use has gone quiet for three hours or
+                            been switched off by its operator. Equal distance is not enough to
+                            cause a switch: two nodes the same number of hops away would
+                            otherwise trade the slot back and forth, and each handover cancels
+                            whatever sync is in flight.
+                        </div>
                     </div>
 
                     <div class="p-2">
                         <div class="text-sm font-medium text-gray-900 dark:text-gray-100">Preferred Propagation Node</div>
                         <div class="flex">
                             <input v-model="config.lxmf_preferred_propagation_node_destination_hash" @input="onLxmfPreferredPropagationNodeDestinationHashChange" type="text" placeholder="Destination Hash. e.g: a39610c89d18bb48c73e429582423c24" class="bg-gray-50 dark:bg-zinc-700 border border-gray-300 dark:border-zinc-600 text-gray-900 dark:text-gray-100 text-sm rounded-lg focus:ring-blue-500 focus:border-blue-500 dark:focus:ring-blue-600 dark:focus:border-blue-600 block w-full p-2.5">
+                        </div>
+                        <!-- LCS: the name the node advertises, so the hash above is identifiable -->
+                        <div v-if="config.lxmf_preferred_propagation_node_destination_hash" class="mt-1 text-sm text-gray-900 dark:text-gray-100">
+                            <span class="font-medium">{{ config.lxmf_preferred_propagation_node_name ?? "Unnamed node" }}</span>
+                            <span v-if="config.lxmf_preferred_propagation_node_hops !== null && config.lxmf_preferred_propagation_node_hops !== undefined" class="text-gray-700 dark:text-gray-300">
+                                • {{ config.lxmf_preferred_propagation_node_hops === 1 ? "1 hop" : `${config.lxmf_preferred_propagation_node_hops} hops` }} away
+                            </span>
+                            <span v-else class="text-gray-700 dark:text-gray-300">• no route known</span>
+                            <span v-if="config.auto_select_propagation_node" class="text-gray-700 dark:text-gray-300">• auto-selected</span>
                         </div>
                         <div class="text-sm text-gray-700 dark:text-gray-300">This is the propagation node your messages will be sent to and retrieved from.</div>
                     </div>
@@ -334,6 +404,11 @@ export default {
                 lxmf_local_propagation_node_enabled: null,
                 lxmf_preferred_propagation_node_destination_hash: null,
                 auto_select_propagation_node: null,
+                auto_select_propagation_node_switching_enabled: null,
+                lxmf_preferred_propagation_node_name: null,
+                lxmf_preferred_propagation_node_hops: null,
+                opportunistic_escalation_seconds: null,
+                link_request_retry_enabled: null,
             },
             isResettingIdentity: false,
         };
@@ -418,6 +493,21 @@ export default {
         async onPathRequestOnSendFailureEnabledChange() {
             await this.updateConfig({
                 "path_request_on_send_failure_enabled": this.config.path_request_on_send_failure_enabled,
+            });
+        },
+        async onOpportunisticEscalationSecondsChange() {
+            await this.updateConfig({
+                "opportunistic_escalation_seconds": this.config.opportunistic_escalation_seconds,
+            });
+        },
+        async onLinkRequestRetryEnabledChange() {
+            await this.updateConfig({
+                "link_request_retry_enabled": this.config.link_request_retry_enabled,
+            });
+        },
+        async onAutoSelectPropagationNodeSwitchingEnabledChange() {
+            await this.updateConfig({
+                "auto_select_propagation_node_switching_enabled": this.config.auto_select_propagation_node_switching_enabled,
             });
         },
         async onMessageAlertEnabledChange() {

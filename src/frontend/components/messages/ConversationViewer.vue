@@ -740,18 +740,36 @@ export default {
                     const hops = data.hops === 0 || data.hops === 1
                         ? "direct"
                         : `${data.hops} hops away`;
-                    DialogUtils.alert(`Link established: ${hops}.`
+                    let message = `Link established: ${hops}.`
                         + "\n\nThe route is confirmed working, not just known."
-                        + " Your next message will reuse this link." + via);
+                        + " Your next message will reuse this link.";
+                    if(data.link_retried){
+                        message += "\n\nThe first attempt failed and this one did not,"
+                            + " which means the failure is what taught the network the"
+                            + " route. That is the button working as intended.";
+                    }
+                    DialogUtils.alert(message + via);
                 } else {
                     let message = "Could not open a link to this peer.";
                     if(data.link_error){
                         message += `\n\n${data.link_error}.`;
                     }
-                    message += "\n\nThe attempt was not wasted: a link request that fails"
-                        + " makes the transport nodes it passed through go and look for"
-                        + " this peer themselves, including over any radio they have."
-                        + " That can take a minute or two to come back.";
+                    if(data.link_retried){
+                        message += "\n\nTried twice. A link request that goes unanswered"
+                            + " makes the transport nodes it passed through go and look"
+                            + " for this peer themselves, including over any radio they"
+                            + " have, so the second attempt was given the route that"
+                            + " search found. It did not find one in time.";
+                        if(data.route_changed){
+                            message += " The route did change, so something answered"
+                                + " — it may simply be slower than the timeout.";
+                        }
+                    } else {
+                        message += "\n\nThe attempt was not wasted: a link request that"
+                            + " fails makes the transport nodes it passed through go and"
+                            + " look for this peer themselves, including over any radio"
+                            + " they have. That can take a minute or two to come back.";
+                    }
                     if(data.announced){
                         message += "\n\nWe also announced, so they can reach us even while"
                             + " we cannot reach them. If they send anything, your queued"

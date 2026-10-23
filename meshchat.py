@@ -44,6 +44,11 @@ from src.backend.sideband_commands import SidebandCommands
 # ValueError: The binary mode of fromstring is removed, use frombuffer instead
 numpy.fromstring = numpy.frombuffer
 
+# LCS: the metadata key a propagation node advertises its name under.
+# Taken from LXMF where it exists, with the literal as a fallback so an older
+# LXMF that has the field but not the constant still resolves the name.
+LXMF_PN_META_NAME = getattr(LXMF, "PN_META_NAME", 0x01)
+
 
 # NOTE: this is required to be able to pack our app with cxfreeze as an exe, otherwise it can't access bundled assets
 # this returns a file path based on if we are running meshchat.py directly, or if we have packed it as an exe with cxfreeze
@@ -194,6 +199,11 @@ class ReticulumMeshChat:
 
         # update active propagation node
         self.set_active_propagation_node(self.config.lxmf_preferred_propagation_node_destination_hash.get())
+
+        # LCS: reconsider it against everything announced since last run. Hops
+        # and liveness both move while the app is closed, so the node that was
+        # preferred yesterday is not necessarily the right one today.
+        self.evaluate_auto_propagation_node()
 
         # enable propagation node (we don't call with false if disabled, as no need to announce disabled state every launch)
         if self.config.lxmf_local_propagation_node_enabled.get():
@@ -2311,17 +2321,36 @@ class ReticulumMeshChat:
                 # parse app_data so we can see if propagation is enabled or disabled for this node
                 is_propagation_enabled = None
                 per_transfer_limit = None
+                node_name = None
+                stamp_cost = None
                 propagation_node_data = self.parse_lxmf_propagation_node_app_data(announce.app_data)
                 if propagation_node_data is not None:
                     is_propagation_enabled = propagation_node_data["enabled"]
                     per_transfer_limit = propagation_node_data["per_transfer_limit"]
+                    node_name = propagation_node_data.get("name")
+                    stamp_cost = propagation_node_data.get("stamp_cost")
+
+                # LCS: distance decides which node is worth using, so it belongs
+                # in the list the user picks from, not just in auto-select
+                hops = None
+                try:
+                    measured_hops = RNS.Transport.hops_to(bytes.fromhex(announce.destination_hash))
+                    if measured_hops < RNS.Transport.PATHFINDER_M:
+                        hops = measured_hops
+                except Exception:
+                    pass
 
                 lxmf_propagation_nodes.append({
                     "destination_hash": announce.destination_hash,
                     "identity_hash": announce.identity_hash,
+                    # LCS: the name the node itself advertises, which is a
+                    # different thing from the operator's delivery display name
+                    "name": node_name,
                     "operator_display_name": operator_display_name,
                     "is_propagation_enabled": is_propagation_enabled,
                     "per_transfer_limit": per_transfer_limit,
+                    "stamp_cost": stamp_cost,
+                    "hops": hops,
                     "created_at": announce.created_at,
                     "updated_at": announce.updated_at,
                 })
@@ -2447,7 +2476,26 @@ class ReticulumMeshChat:
             path_was_known = RNS.Transport.has_path(destination_hash)
             path_was_refreshed = await self.refresh_path(destination_hash, timeout_seconds)
 
+            # taken after the refresh, so a route arriving later can only have
+            # come from what the link attempt provokes
+            route_before = self.route_snapshot(destination_hash)
+
             link_established, link_error = await self.probe_link(destination_hash, timeout_seconds)
+
+            # LCS: the first attempt is the provoker, the second is the one that
+            # can win. A link request that goes unanswered makes every transport
+            # node that relayed it mark its own route unresponsive and ask the
+            # rest of the network, so the route that comes back arrives seconds
+            # after the attempt that failed, not during it. Reporting failure at
+            # that moment describes the network as it was before the button was
+            # pressed. Trying once more is what closes the loop.
+            link_retried = False
+            route_changed = False
+            if not link_established and self.config.link_request_retry_enabled.get():
+                route_changed = await self.wait_for_route_change(
+                    destination_hash, route_before, self.LINK_REQUEST_RETRY_WAIT_SECONDS)
+                link_retried = True
+                link_established, link_error = await self.probe_link(destination_hash, timeout_seconds)
 
             announced = False
             if not link_established:
@@ -2467,6 +2515,8 @@ class ReticulumMeshChat:
                 # reported, not acted on: messages still go opportunistically
                 # first whether or not a link is sitting here
                 "link_active": self.active_delivery_link_available(destination_hash),
+                "link_retried": link_retried,
+                "route_changed": route_changed,
                 "path_was_known": path_was_known,
                 "path_was_refreshed": path_was_refreshed,
                 "announced": announced,
@@ -2570,19 +2620,24 @@ class ReticulumMeshChat:
             timeout_seconds = int(request.query.get("timeout", 15))
             timeout_after_seconds = time.time() + timeout_seconds
 
-            # request path if we don't have it
+            # LCS: ask for a route if we have none, through refresh_path so the
+            # wait actually means something and nothing is left worse off. A
+            # route we already hold is left alone: ping measures the route that
+            # is there, and expiring it would be measuring a different one.
+            #
+            # Not a duplicate of Link Request, which repairs a route and proves
+            # it by opening a link. This sends one packet over whatever route
+            # exists and reports what came back -- round trip time, signal,
+            # hops. One measures, the other repairs.
             if not RNS.Transport.has_path(destination_hash):
-                RNS.Transport.request_path(destination_hash)
-
-            # wait until we have a path, or give up after the configured timeout
-            while not RNS.Transport.has_path(destination_hash) and time.time() < timeout_after_seconds:
-                await asyncio.sleep(0.1)
+                await self.refresh_path(destination_hash, timeout_seconds)
 
             # find destination identity
             destination_identity = RNS.Identity.recall(destination_hash)
             if destination_identity is None:
                 return web.json_response({
-                    "message": "Ping failed. Could not find path to destination.",
+                    "message": "Ping failed. No identity is known for this destination, "
+                               "so nothing can be addressed to it until it announces.",
                 }, status=503)
 
             # create outbound destination
@@ -3346,6 +3401,21 @@ class ReticulumMeshChat:
         if "auto_select_propagation_node" in data:
             self.config.auto_select_propagation_node.set(bool(data["auto_select_propagation_node"]))
 
+            # turning it on should take effect now, not at the next announce
+            if bool(data["auto_select_propagation_node"]):
+                self.last_propagation_node_switch_at = 0
+                self.evaluate_auto_propagation_node()
+
+        if "auto_select_propagation_node_switching_enabled" in data:
+            value = bool(data["auto_select_propagation_node_switching_enabled"])
+            self.config.auto_select_propagation_node_switching_enabled.set(value)
+
+        if "opportunistic_escalation_seconds" in data:
+            self.config.opportunistic_escalation_seconds.set(int(data["opportunistic_escalation_seconds"]))
+
+        if "link_request_retry_enabled" in data:
+            self.config.link_request_retry_enabled.set(bool(data["link_request_retry_enabled"]))
+
         # update auto sync interval
         if "lxmf_preferred_propagation_node_auto_sync_interval_seconds" in data:
             value = int(data["lxmf_preferred_propagation_node_auto_sync_interval_seconds"])
@@ -3576,6 +3646,47 @@ class ReticulumMeshChat:
             "type": "announced",
         }))
 
+    # LCS: the advertised name of the propagation node we are using, if it has
+    # one. Operators set it on the node itself and it rides along in the
+    # announce metadata, so it is the closest thing to a label the network has
+    # for a relay -- a hash tells the user nothing about which one is in use.
+    def preferred_propagation_node_name(self):
+
+        try:
+            node_hash = self.config.lxmf_preferred_propagation_node_destination_hash.get()
+            if node_hash is None or node_hash == "":
+                return None
+
+            announce = database.Announce.get_or_none(
+                database.Announce.destination_hash == node_hash,
+                database.Announce.aspect == "lxmf.propagation",
+            )
+            if announce is None:
+                return None
+
+            return self.propagation_node_name(announce.app_data)
+
+        except Exception as e:
+            print("could not read the preferred propagation node name: {}".format(e))
+            return None
+
+    # LCS: how far away the propagation node in use is, or None if unknown
+    def preferred_propagation_node_hops(self):
+
+        try:
+            node_hash = self.config.lxmf_preferred_propagation_node_destination_hash.get()
+            if node_hash is None or node_hash == "":
+                return None
+
+            hops = RNS.Transport.hops_to(bytes.fromhex(node_hash))
+            if hops >= RNS.Transport.PATHFINDER_M:
+                return None
+
+            return hops
+
+        except Exception:
+            return None
+
     # returns a dictionary of config
     def get_config_dict(self):
         return {
@@ -3601,6 +3712,13 @@ class ReticulumMeshChat:
             "lxmf_local_propagation_node_address_hash": self.message_router.propagation_destination.hexhash,
             "lxmf_preferred_propagation_node_destination_hash": self.config.lxmf_preferred_propagation_node_destination_hash.get(),
             "auto_select_propagation_node": self.config.auto_select_propagation_node.get(),
+            "auto_select_propagation_node_switching_enabled": self.config.auto_select_propagation_node_switching_enabled.get(),
+            # LCS: the name the node advertises and how far away it is, so the
+            # settings page can show which relay is in use rather than a hash
+            "lxmf_preferred_propagation_node_name": self.preferred_propagation_node_name(),
+            "lxmf_preferred_propagation_node_hops": self.preferred_propagation_node_hops(),
+            "opportunistic_escalation_seconds": self.config.opportunistic_escalation_seconds.get(),
+            "link_request_retry_enabled": self.config.link_request_retry_enabled.get(),
             "lxmf_preferred_propagation_node_auto_sync_interval_seconds": self.config.lxmf_preferred_propagation_node_auto_sync_interval_seconds.get(),
             "lxmf_preferred_propagation_node_last_synced_at": self.config.lxmf_preferred_propagation_node_last_synced_at.get(),
             "lxmf_user_icon_name": self.config.lxmf_user_icon_name.get(),
@@ -4224,6 +4342,54 @@ class ReticulumMeshChat:
         return None
 
     LINK_PROBE_POLL_SECONDS = 0.1
+
+    # LCS: how long to give the rediscovery a failed link provokes.
+    LINK_REQUEST_RETRY_WAIT_SECONDS = 12
+    LINK_REQUEST_RETRY_POLL_SECONDS = 0.5
+
+    # LCS: enough of a path table entry to tell a new route from the old one.
+    #
+    # has_path is useless for this. Our own entry points at the nearest
+    # transport node and survives everything happening further out, so it stays
+    # true throughout a rediscovery and tells us nothing. What does change is
+    # the announce the entry was built from: a route relearned from the far
+    # side arrives on a new announce with a new packet hash, and usually a
+    # different hop count. Either one moving means the table was rewritten.
+    @staticmethod
+    def route_snapshot(destination_hash: bytes):
+
+        try:
+            with RNS.Transport.path_table_lock:
+                entry = RNS.Transport.path_table.get(destination_hash)
+                if entry is None:
+                    return None
+                entry = list(entry)
+        except Exception as e:
+            print("could not read the path table for {}: {}".format(destination_hash.hex(), e))
+            return None
+
+        packet_hash = None
+        slot = ReticulumMeshChat.path_entry_packet_slot(entry)
+        if slot is not None:
+            packet_hash = entry[slot]
+
+        return (RNS.Transport.hops_to(destination_hash), packet_hash)
+
+    # LCS: wait for the path table to be rewritten for this destination.
+    #
+    # Returns as soon as the route differs from the snapshot, or False at the
+    # deadline. False is not a reason to stop: the caller retries the link
+    # either way, because a route can be repaired further out without our own
+    # entry changing at all.
+    async def wait_for_route_change(self, destination_hash: bytes, before, timeout_seconds: float):
+
+        deadline = time.time() + timeout_seconds
+        while time.time() < deadline:
+            await asyncio.sleep(self.LINK_REQUEST_RETRY_POLL_SECONDS)
+            if self.route_snapshot(destination_hash) != before:
+                return True
+
+        return False
 
     # LCS: build a real link to a peer and report whether it came up.
     #
@@ -5483,6 +5649,94 @@ class ReticulumMeshChat:
 
         threading.Thread(target=deliver, daemon=True).start()
 
+        self.arm_opportunistic_escalation(lxmf_message)
+
+    OPPORTUNISTIC_ESCALATION_POLL_SECONDS = 0.5
+
+    # LCS: stop waiting on an opportunistic send that is not going to land.
+    #
+    # LXMF gives up on its own, eventually. The opportunistic branch of
+    # process_outbound runs through MAX_DELIVERY_ATTEMPTS (5) with
+    # DELIVERY_RETRY_WAIT (10s) between them, and folds in one
+    # drop-and-rediscover with a PATH_REQUEST_WAIT (7s) pause, all paced by a
+    # PROCESSING_INTERVAL (4s) job loop. On a dead route that works out at
+    # roughly a minute of packets into a hole before fail_message fires -- and
+    # fail_message is what starts the link attempt, which is the only step in
+    # the whole ladder that makes a transport node go and ask the rest of the
+    # network.
+    #
+    # So the most useful thing available is queued behind the least useful
+    # thing available. This cuts that short: once the deadline passes with the
+    # message still undelivered, it is taken out of the outbound queue and
+    # handed to the link rung directly.
+    #
+    # Only the repeats are given up on, not the recovery. Everything below the
+    # link -- the path refresh, the propagation node, the announce -- still
+    # runs in the same order it would have.
+    def arm_opportunistic_escalation(self, lxmf_message):
+
+        if getattr(lxmf_message, "desired_method", None) != LXMF.LXMessage.OPPORTUNISTIC:
+            return
+
+        if not self.config.direct_link_on_send_failure_enabled.get():
+            return
+
+        try:
+            deadline_seconds = float(self.config.opportunistic_escalation_seconds.get())
+        except Exception:
+            deadline_seconds = 0
+
+        if deadline_seconds <= 0:
+            return
+
+        # states LXMF will not move on from, so there is nothing left to wait for
+        settled = (
+            LXMF.LXMessage.DELIVERED,
+            LXMF.LXMessage.FAILED,
+            LXMF.LXMessage.CANCELLED,
+            LXMF.LXMessage.REJECTED,
+        )
+
+        def watchdog():
+
+            deadline = time.time() + deadline_seconds
+            while time.time() < deadline:
+                time.sleep(self.OPPORTUNISTIC_ESCALATION_POLL_SECONDS)
+                if lxmf_message.state in settled:
+                    return
+
+            # the method can have been changed under us by a failure that beat
+            # the deadline, in which case the ladder is already further along
+            if getattr(lxmf_message, "desired_method", None) != LXMF.LXMessage.OPPORTUNISTIC:
+                return
+
+            try:
+                router = self.message_router
+
+                # Taken under the router's own lock, because process_outbound
+                # iterates this list on its job thread and removing from
+                # underneath it would skip a message or raise.
+                with router.outbound_processing_lock:
+                    if lxmf_message.state in settled:
+                        return
+                    if lxmf_message not in router.pending_outbound:
+                        return
+                    router.pending_outbound.remove(lxmf_message)
+
+            except Exception as e:
+                print("could not take {} out of the outbound queue: {}".format(
+                    lxmf_message.destination_hash.hex(), e,
+                ))
+                return
+
+            print("Opportunistic delivery to {} has not landed in {}s, escalating early".format(
+                lxmf_message.destination_hash.hex(), deadline_seconds,
+            ))
+
+            self.send_failed_message_over_direct_link(lxmf_message)
+
+        threading.Thread(target=watchdog, daemon=True).start()
+
     # LCS: re-send an opportunistic message over a link.
     #
     # The rung between opportunistic and propagation. try_propagation_on_fail is
@@ -5778,6 +6032,10 @@ class ReticulumMeshChat:
         # message the hash the database row below is keyed on.
         await asyncio.to_thread(self.message_router.handle_outbound, lxmf_message)
 
+        # LCS: start the clock on the opportunistic attempt, so a dead route
+        # costs seconds rather than the full minute LXMF spends retrying
+        self.arm_opportunistic_escalation(lxmf_message)
+
         # upsert lxmf message to database
         self.db_upsert_lxmf_message(lxmf_message)
 
@@ -5877,6 +6135,207 @@ class ReticulumMeshChat:
         if self.config.auto_resend_failed_messages_when_announce_received.get():
             AsyncUtils.run_async(self.resend_failed_messages_for_destination(destination_hash.hex()))
 
+    # LCS: how the preferred propagation node is chosen and when it changes.
+    #
+    # A node is only worth using if it is close and alive, and both of those
+    # change while the app runs: a relay goes down, a nearer one comes up, the
+    # radio path shifts and what was four hops away is now two. Adopting the
+    # first node ever heard and never looking again -- which is what this used
+    # to do -- leaves you pinned to whichever one happened to announce first,
+    # which on startup is close to random.
+    #
+    # Hops first, most recent announce as the tiebreak, which is the same
+    # ordering Liberty Chat uses for its relay list.
+    #
+    # Where this deliberately differs from "switch to anything newer": two
+    # nodes at the same distance announcing in turn would hand the preference
+    # back and forth forever, and every handover cancels an in-flight sync and
+    # resets the sync timestamp. So recency only decides between equals, or
+    # rescues us from a node that has gone quiet.
+    PROPAGATION_NODE_STALE_SECONDS = 3 * 3600        # no announce for this long means gone
+    PROPAGATION_NODE_SWITCH_COOLDOWN_SECONDS = 300   # minimum gap between switches
+
+    # transfer states that mean a sync is underway and a switch would abort it
+    PROPAGATION_SYNC_BUSY_STATES = (
+        LXMRouter.PR_PATH_REQUESTED,
+        LXMRouter.PR_LINK_ESTABLISHING,
+        LXMRouter.PR_LINK_ESTABLISHED,
+        LXMRouter.PR_REQUEST_SENT,
+        LXMRouter.PR_RECEIVING,
+        LXMRouter.PR_RESPONSE_RECEIVED,
+    )
+
+    last_propagation_node_switch_at = 0
+
+    # LCS: every propagation node we have heard of, with what we know about it.
+    def propagation_node_candidates(self):
+
+        candidates = []
+
+        try:
+            own_node_hash = self.message_router.propagation_destination.hexhash
+        except Exception:
+            own_node_hash = None
+
+        announces = database.Announce.select().where(database.Announce.aspect == "lxmf.propagation")
+
+        for announce in announces:
+
+            # using our own local node as our own relay is not a route to anywhere
+            if own_node_hash is not None and announce.destination_hash == own_node_hash:
+                continue
+
+            parsed = self.parse_lxmf_propagation_node_app_data(announce.app_data)
+
+            # a node the operator has switched off will not accept anything
+            if parsed is not None and parsed.get("enabled") is False:
+                continue
+
+            try:
+                hops = RNS.Transport.hops_to(bytes.fromhex(announce.destination_hash))
+            except Exception:
+                hops = RNS.Transport.PATHFINDER_M
+
+            announced_at = 0
+            try:
+                announced_at = announce.updated_at.timestamp()
+            except Exception:
+                pass
+
+            candidates.append({
+                "destination_hash": announce.destination_hash,
+                "name": parsed.get("name") if parsed is not None else None,
+                "hops": hops,
+                "announced_at": announced_at,
+            })
+
+        return candidates
+
+    # LCS: pick the preferred propagation node, and switch to a better one.
+    #
+    # Called whenever a propagation node announces, at startup, and when the
+    # user turns auto-select back on. Does nothing at all when the user has
+    # chosen a node by hand -- that turns auto-select off, and this never turns
+    # it back on.
+    def evaluate_auto_propagation_node(self):
+
+        try:
+
+            if not self.config.auto_select_propagation_node.get():
+                return
+
+            candidates = self.propagation_node_candidates()
+            if len(candidates) == 0:
+                return
+
+            # closest wins, most recently heard breaks the tie
+            candidates.sort(key=lambda node: (node["hops"], -node["announced_at"]))
+            best = candidates[0]
+
+            current_hash = self.config.lxmf_preferred_propagation_node_destination_hash.get()
+
+            if current_hash is None or current_hash == "":
+                self.adopt_propagation_node(best, "nothing was selected")
+                return
+
+            if not self.config.auto_select_propagation_node_switching_enabled.get():
+                return
+
+            current = next((node for node in candidates
+                            if node["destination_hash"] == current_hash), None)
+
+            now = time.time()
+            current_silence = None
+            if current is not None:
+                current_silence = now - current["announced_at"]
+
+            # The node we are pointed at has stopped announcing, been switched
+            # off by its operator, or we have never actually heard from it.
+            # Being the closest is no recommendation when it is also dead, so
+            # it is taken out of the running rather than ranked.
+            if current is None or current_silence > self.PROPAGATION_NODE_STALE_SECONDS:
+
+                live = [node for node in candidates
+                        if now - node["announced_at"] <= self.PROPAGATION_NODE_STALE_SECONDS]
+
+                # everything has gone quiet, so there is nothing better to move
+                # to and dropping the one we have would only make it worse
+                if len(live) == 0:
+                    return
+
+                best = live[0]
+                if best["destination_hash"] == current_hash:
+                    return
+
+                if current is None:
+                    reason = "the selected node is no longer advertising"
+                else:
+                    reason = "the selected node has not announced in {}".format(
+                        self.format_duration(current_silence))
+
+            elif best["destination_hash"] == current_hash:
+                return
+
+            elif best["hops"] < current["hops"]:
+                reason = "it is {} hops away instead of {}".format(best["hops"], current["hops"])
+
+            else:
+                # same distance or farther, and the one in use is alive, so
+                # there is nothing to gain and a handover costs an in-flight sync
+                return
+
+            # a switch cancels whatever sync is in flight and resets the sync
+            # clock, so it is not worth doing twice in quick succession
+            if time.time() - self.last_propagation_node_switch_at < self.PROPAGATION_NODE_SWITCH_COOLDOWN_SECONDS:
+                return
+
+            try:
+                if self.message_router.propagation_transfer_state in self.PROPAGATION_SYNC_BUSY_STATES:
+                    return
+            except Exception:
+                pass
+
+            self.adopt_propagation_node(best, reason)
+
+        except Exception as e:
+            print("could not evaluate the preferred propagation node: {}".format(e))
+
+    # LCS: make a node the preferred one and start using it
+    def adopt_propagation_node(self, node, reason: str):
+
+        node_hash = node["destination_hash"]
+
+        self.config.lxmf_preferred_propagation_node_destination_hash.set(node_hash)
+        self.set_active_propagation_node(node_hash)
+        self.last_propagation_node_switch_at = time.time()
+
+        print("Using propagation node {} ({}, {} hops) because {}".format(
+            node["name"] or "unnamed",
+            node_hash,
+            node["hops"] if node["hops"] < RNS.Transport.PATHFINDER_M else "unknown",
+            reason,
+        ))
+
+        # Only once there is a loop to broadcast on. This runs during startup
+        # as well, before the web server exists, and there is nothing to tell
+        # at that point -- the first client to connect reads the config anyway.
+        try:
+            if AsyncUtils.main_loop is not None and AsyncUtils.main_loop.is_running():
+                AsyncUtils.run_async(self.send_config_to_websocket_clients())
+        except Exception as e:
+            print("could not broadcast the propagation node change: {}".format(e))
+
+    @staticmethod
+    def format_duration(seconds: float):
+
+        seconds = int(max(0, seconds))
+        if seconds < 60:
+            return "{}s".format(seconds)
+        if seconds < 3600:
+            return "{}m".format(seconds // 60)
+
+        return "{}h".format(seconds // 3600)
+
     # handle an announce received from reticulum, for an lxmf propagation node address
     # NOTE: cant be async, as Reticulum doesn't await it
     def on_lxmf_propagation_announce_received(self, aspect, destination_hash, announced_identity, app_data, announce_packet_hash):
@@ -5887,19 +6346,8 @@ class ReticulumMeshChat:
         # upsert announce to database
         self.db_upsert_announce(announced_identity, destination_hash, aspect, app_data, announce_packet_hash)
 
-        # LCS: auto-select a propagation node if the user hasn't set one yet.
-        # adopts the first discovered lxmf.propagation node, then stops (won't override
-        # a node the user later chooses). controlled by auto_select_propagation_node.
-        try:
-            if self.config.auto_select_propagation_node.get():
-                current = self.config.lxmf_preferred_propagation_node_destination_hash.get()
-                if current is None or current == "":
-                    node_hash = destination_hash.hex()
-                    self.config.lxmf_preferred_propagation_node_destination_hash.set(node_hash)
-                    self.set_active_propagation_node(node_hash)
-                    RNS.log(f"LCS: auto-selected preferred propagation node {node_hash}", RNS.LOG_NOTICE)
-        except Exception as e:
-            RNS.log(f"LCS: auto-select propagation node failed: {e}", RNS.LOG_DEBUG)
+        # LCS: reconsider the preferred node now that one has announced
+        self.evaluate_auto_propagation_node()
 
         # find announce from database
         announce = database.Announce.get_or_none(database.Announce.destination_hash == destination_hash.hex())
@@ -6079,17 +6527,79 @@ class ReticulumMeshChat:
             return default_value
 
     # parses lxmf propagation node app data
+    # LCS: read a propagation node announce, in the format it is actually sent.
+    #
+    # This was reading the three field layout LXMF used years ago, against
+    # announces that have carried seven fields since 0.5. The fields it picked
+    # up had all moved:
+    #
+    #     [0] legacy LXMF propagation support flag -- was read as "enabled",
+    #         and it is hardcoded False in LXMRouter.get_propagation_node_app_data,
+    #         so every modern node showed as Disabled by Operator
+    #     [1] timebase -- the one field that happened to still line up
+    #     [2] the enabled flag -- was read as the per-transfer limit, so the
+    #         limit displayed as True or False
+    #
+    # The modern layout is [legacy, timebase, enabled, per_transfer_limit,
+    # per_sync_limit, [stamp costs], metadata]. The name the operator set on
+    # the node lives in that metadata dict under PN_META_NAME, which is what
+    # Liberty Chat shows and what MeshChat had no way to reach.
     def parse_lxmf_propagation_node_app_data(self, app_data_base64: str):
+
         try:
             app_data_bytes = base64.b64decode(app_data_base64)
             data = msgpack.unpackb(app_data_bytes)
+        except Exception:
+            return None
+
+        try:
+
+            if isinstance(data, (list, tuple)) and len(data) >= 7:
+
+                name = None
+                metadata = data[6]
+                if isinstance(metadata, dict):
+                    raw_name = metadata.get(LXMF_PN_META_NAME)
+                    if isinstance(raw_name, bytes):
+                        try:
+                            name = raw_name.decode("utf-8")
+                        except Exception:
+                            name = None
+                    elif isinstance(raw_name, str):
+                        name = raw_name
+
+                stamp_cost = None
+                if isinstance(data[5], (list, tuple)) and len(data[5]) > 0:
+                    stamp_cost = int(data[5][0])
+
+                return {
+                    "name": name,
+                    "enabled": bool(data[2]),
+                    "timebase": int(data[1]),
+                    "per_transfer_limit": int(data[3]),
+                    "stamp_cost": stamp_cost,
+                }
+
+            # announces from a node old enough to predate the current layout
             return {
+                "name": None,
                 "enabled": bool(data[0]),
                 "timebase": int(data[1]),
                 "per_transfer_limit": int(data[2]),
+                "stamp_cost": None,
             }
-        except:
+
+        except Exception:
             return None
+
+    # LCS: the advertised name of a propagation node, if it set one.
+    def propagation_node_name(self, app_data_base64: str):
+
+        parsed = self.parse_lxmf_propagation_node_app_data(app_data_base64)
+        if parsed is None:
+            return None
+
+        return parsed.get("name")
 
     # returns true if the conversation has messages newer than the last read at timestamp
     def is_lxmf_conversation_unread(self, destination_hash):
@@ -6265,6 +6775,33 @@ class Config:
     # provokes a transport node into asking the rest of the network on our
     # behalf, so on a multi-hop mesh it is what gets a radio to transmit.
     direct_link_on_send_failure_enabled = BoolConfig("direct_link_on_send_failure_enabled", True)
+
+    # LCS: how long an opportunistic send is given before the ladder moves on.
+    #
+    # LXMF's own opportunistic ladder takes about a minute to give up: five
+    # retries at DELIVERY_RETRY_WAIT (10s) apart, with a drop-and-rediscover
+    # and a PATH_REQUEST_WAIT (7s) pause folded in, all driven by a 4 second
+    # job loop. Only when the attempt count runs out does fail_message fire and
+    # the escalation to a link begin. On a route that is actually dead, every
+    # one of those repeats is a packet into a hole, and the step that could fix
+    # it -- the link attempt -- waits behind all of them.
+    #
+    # 25 seconds covers the first send, the rediscovery LXMF does on its own,
+    # and the attempt that follows it, and cuts the three repeats after that.
+    # Raise it on a slow radio where a working path legitimately takes longer
+    # than that to answer; set it to 0 to leave LXMF's ladder alone.
+    opportunistic_escalation_seconds = IntConfig("opportunistic_escalation_seconds", 25)
+
+    # LCS: try the link a second time after the first attempt fails.
+    #
+    # The first failure is not a wasted trip: it is what makes the transport
+    # nodes along the way go and look. Giving up on it reports the state of the
+    # network before the button did its work rather than after.
+    link_request_retry_enabled = BoolConfig("link_request_retry_enabled", True)
+
+    # LCS: keep watching for a better propagation node instead of adopting the
+    # first one heard and never looking again.
+    auto_select_propagation_node_switching_enabled = BoolConfig("auto_select_propagation_node_switching_enabled", True)
 
     # LCS: announce when a peer cannot be reached. A path request stops at the
     # first transport node that holds an entry, so when one comes back empty

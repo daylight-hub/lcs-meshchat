@@ -12,7 +12,12 @@
                 <div v-for="propagationNode of searchedPropagationNodes" class="border dark:border-zinc-700 rounded bg-white dark:bg-zinc-800 shadow">
                     <div class="p-1 flex">
                         <div class="my-auto">
-                            <div class="font-semibold text-gray-900 dark:text-gray-100">{{ propagationNode.operator_display_name ?? "Unknown Operator" }}</div>
+                            <!-- LCS: the name the node advertises in its own announce, which
+                                 is what the operator actually called the relay. The operator
+                                 display name comes from a different announce entirely, so it
+                                 is shown as well rather than instead. -->
+                            <div class="font-semibold text-gray-900 dark:text-gray-100">{{ propagationNode.name ?? propagationNode.operator_display_name ?? "Unnamed Node" }}</div>
+                            <div v-if="propagationNode.name && propagationNode.operator_display_name" class="text-sm text-gray-700 dark:text-gray-300">Operated by {{ propagationNode.operator_display_name }}</div>
                             <div class="text-sm text-gray-700 dark:text-gray-300"><{{ propagationNode.destination_hash }}></div>
                         </div>
                         <div class="ml-auto my-auto">
@@ -27,11 +32,18 @@
                     <div class="bg-gray-50 dark:bg-zinc-900 p-1">
                         <div class="text-gray-500 dark:text-gray-400 text-sm">
                             <span>Announced {{ formatTimeAgo(propagationNode.updated_at) }}</span>
+                            <!-- LCS: distance is what auto-select ranks on, so show it -->
+                            <span v-if="propagationNode.hops !== null && propagationNode.hops !== undefined">
+                                <span> • {{ propagationNode.hops === 1 ? "1 hop" : `${propagationNode.hops} hops` }}</span>
+                            </span>
+                            <span v-else>
+                                <span> • <span class="text-gray-400 dark:text-gray-500">No route known</span></span>
+                            </span>
                             <span v-if="propagationNode.is_propagation_enabled === false">
                                 <span> • <span class="text-red-500 dark:text-red-400">Disabled by Operator</span></span>
                             </span>
                             <span v-if="config.lxmf_preferred_propagation_node_destination_hash === propagationNode.destination_hash">
-                                <span> • <span class="text-green-500 dark:text-green-400">Preferred</span></span>
+                                <span> • <span class="text-green-500 dark:text-green-400">{{ config.auto_select_propagation_node ? "In use (auto-selected)" : "In use" }}</span></span>
                             </span>
                         </div>
                     </div>
@@ -86,6 +98,7 @@ export default {
             propagationNodes: [],
             config: {
                 lxmf_preferred_propagation_node_destination_hash: null,
+                auto_select_propagation_node: null,
             },
         };
     },
@@ -163,8 +176,10 @@ export default {
             return this.propagationNodes.filter((propagationNode) => {
                 const search = this.searchTerm.toLowerCase();
                 const matchesOperatorDisplayName = propagationNode.operator_display_name?.toLowerCase()?.includes(search) ?? false;
+                // LCS: the advertised name is what users will search by
+                const matchesNodeName = propagationNode.name?.toLowerCase()?.includes(search) ?? false;
                 const matchesDestinationHash = propagationNode.destination_hash.toLowerCase().includes(search);
-                return matchesOperatorDisplayName || matchesDestinationHash;
+                return matchesOperatorDisplayName || matchesNodeName || matchesDestinationHash;
             });
         },
     },

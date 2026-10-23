@@ -210,9 +210,30 @@ _cls = next(n for n in _ast.walk(_tree)
             if isinstance(n, _ast.ClassDef) and n.name == "ReticulumMeshChat")
 _funcs = {n.name: n for n in _cls.body
           if isinstance(n, (_ast.FunctionDef, _ast.AsyncFunctionDef))}
-consts = {t.id: _ast.literal_eval(n.value)
-          for n in _cls.body if isinstance(n, _ast.Assign)
-          for t in n.targets if isinstance(t, _ast.Name)}
+
+
+def _class_constants(class_node):
+    """Class-level constants, skipping anything that is not a plain literal.
+
+    literal_eval raises on an expression like `3 * 3600`, which is an ordinary
+    way to write a constant, so a comprehension over every assignment in the
+    class is a tripwire for whoever adds one next.
+    """
+    found = {}
+    for node in class_node.body:
+        if not isinstance(node, _ast.Assign):
+            continue
+        for target in node.targets:
+            if not isinstance(target, _ast.Name):
+                continue
+            try:
+                found[target.id] = _ast.literal_eval(node.value)
+            except Exception:
+                pass
+    return found
+
+
+consts = _class_constants(_cls)
 
 
 def _body(name):

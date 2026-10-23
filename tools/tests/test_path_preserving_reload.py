@@ -40,9 +40,30 @@ if klass is None:
 
 funcs = {n.name: n for n in klass.body
          if isinstance(n, (ast.FunctionDef, ast.AsyncFunctionDef))}
-consts = {t.id: ast.literal_eval(n.value)
-          for n in klass.body if isinstance(n, ast.Assign)
-          for t in n.targets if isinstance(t, ast.Name)}
+
+
+def class_constants(class_node, ast_module=ast):
+    """Class-level constants, skipping anything not a plain literal.
+
+    Written as an expression over literal_eval, which raises on a value like
+    `3 * 3600` and took the whole suite down with it the first time someone
+    wrote a constant that way.
+    """
+    found = {}
+    for node in class_node.body:
+        if not isinstance(node, ast_module.Assign):
+            continue
+        for target in node.targets:
+            if not isinstance(target, ast_module.Name):
+                continue
+            try:
+                found[target.id] = ast_module.literal_eval(node.value)
+            except Exception:
+                pass
+    return found
+
+
+consts = class_constants(klass)
 
 
 def body_of(name):
