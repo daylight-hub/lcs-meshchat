@@ -195,6 +195,20 @@ def body_of(name):
     return ast.get_source_segment(source, funcs[name]) or ""
 
 
+# class-level constants, skipping anything that is not a plain literal
+consts = {}
+for _node in klass.body:
+    if not isinstance(_node, ast.Assign):
+        continue
+    for _target in _node.targets:
+        if not isinstance(_target, ast.Name):
+            continue
+        try:
+            consts[_target.id] = ast.literal_eval(_node.value)
+        except Exception:
+            pass
+
+
 print()
 for name in ["on_lxmf_sending_failed", "queue_failed_message_for_path_request",
              "request_path_for_failed_messages", "resolve_pending_path_request",
@@ -205,12 +219,20 @@ failed = body_of("on_lxmf_sending_failed")
 
 # the path request must be reached before the propagation fallback
 check("the failure handler tries the path request before propagating",
-      failed.index("path_request_on_send_failure_enabled")
+      failed.index("queue_failed_message_for_path_request")
       < failed.index("send_failed_message_via_propagation_node"))
 
-# and propagation must still be reachable when path requests are disabled
-check("propagation still happens when path requests are turned off",
-      "elif wants_propagation" in failed
+# Recovering the route after a failure is no longer optional. As a setting it
+# could be turned off, and then a message that failed on a stale path waited
+# for the peer's next announce -- hours away -- which is indistinguishable
+# from the message being lost.
+check("recovering the route after a failure is not a setting any more",
+      "path_request_on_send_failure_enabled" not in SOURCE.read_text(encoding="utf-8"))
+
+# with no propagation node configured there is nothing to ask a route about, so
+# the message still falls through to whatever it was told to do on failure
+check("propagation still happens when there is no node to recover a route to",
+      "wants_propagation" in failed
       and "send_failed_message_via_propagation_node" in failed)
 
 # A message that already went to a propagation node and failed did so because the
@@ -400,8 +422,15 @@ for name in ["recent_conversation_destination_hashes", "warm_paths_for_known_pee
     check("method present: " + name, name in funcs)
 
 warm_body = body_of("warm_paths_for_known_peers")
-check("warming is skippable from settings",
-      "path_warm_on_startup_enabled" in warm_body)
+# Off, and no longer a setting. The saved path table covers what it would have
+# warmed, and a path request cannot repair anything past the first hop anyway
+# -- the startup announce is what does that. Left in the source behind a
+# constant rather than deleted.
+check("warming is off behind a constant, not a setting",
+      "PATH_WARM_ON_STARTUP" in warm_body
+      and "path_warm_on_startup_enabled" not in warm_body)
+check("and the constant is off",
+      consts.get("PATH_WARM_ON_STARTUP") is False)
 check("warming skips peers that already have a path, so it costs nothing when idle",
       "has_path" in warm_body)
 check("warming sleeps between requests rather than firing them all at once",
@@ -420,8 +449,11 @@ check("a pending write is not scheduled twice",
       "path_persist_pending" in sched)
 check("a shared instance is left alone, since it does not own the path table",
       "is_connected_to_shared_instance" in sched)
-check("persistence is skippable from settings",
-      "persist_paths_on_discovery_enabled" in sched)
+# Saving learned paths is always on now. Reticulum otherwise writes its path
+# table only on a clean shutdown or every 12 hours, so turning this off meant a
+# hard kill threw away most of what had been learned.
+check("saving learned paths is not a setting any more",
+      "persist_paths_on_discovery_enabled" not in sched)
 
 persist = body_of("persist_path_table_after_quiet_period")
 check("the write is debounced",

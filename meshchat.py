@@ -528,8 +528,71 @@ class ReticulumMeshChat:
         except Exception:
             return "unknown"
 
+    # LCS: how long to wait after launch before the startup announce.
+    #
+    # Long enough for the interfaces to be up and for AutoInterface to have
+    # found its peers -- an announce emitted before there is anywhere to send
+    # it is simply lost, and the next one is hours away.
+    STARTUP_ANNOUNCE_DELAY_SECONDS = 15
+
+    # LCS: don't re-announce on a restart that happened moments ago, so
+    # restarting a few times in a row does not put a burst on the air.
+    STARTUP_ANNOUNCE_FLOOR_SECONDS = 300
+
+    # LCS: announce once at startup.
+    #
+    # This is the gap that made a restart look like a broken network, and it is
+    # worth being precise about why, because restoring the path table does not
+    # cover it.
+    #
+    # The saved path table is our own. Restoring it tells this node "to reach
+    # that peer, hand the packet to the Command Center" -- and that is all it
+    # tells anyone. The Command Center has its own path table, the far side's
+    # Command Center has another, and the peer has a third. A message only
+    # lands if all of them hold a live route, and a delivery proof only comes
+    # back if the route to *us* is live at every hop too.
+    #
+    # Nothing we restore locally repairs any of those. A path request will not
+    # either: the first node holding any entry answers it from its own cache
+    # and stops it there, so it never crosses a hop.
+    #
+    # An announce is the only packet we emit that every transport node
+    # rebroadcasts rather than consumes, and it carries a fresh emission
+    # timestamp, so it is accepted over whatever stale entry each hop was
+    # holding. One announce repairs the route to us across the whole chain,
+    # which is the half of the round trip we cannot otherwise touch.
+    #
+    # Without this, a restart left MeshChat silent for the remainder of the
+    # auto-announce interval, because last_announced_at persists across the
+    # restart. On a three hour interval that is up to three hours during which
+    # the far side cannot reach us, and every send fails waiting for a proof
+    # that has no route home. Announcing here closes it.
+    async def startup_announce(self):
+
+        await asyncio.sleep(self.STARTUP_ANNOUNCE_DELAY_SECONDS)
+
+        if not self.config.announce_on_startup_enabled.get():
+            return
+
+        if not self.config.auto_announce_enabled.get():
+            return
+
+        last_announced_at = self.config.last_announced_at.get()
+        if last_announced_at is not None:
+            if time.time() - last_announced_at < self.STARTUP_ANNOUNCE_FLOOR_SECONDS:
+                return
+
+        try:
+            print("Announcing at startup, so the rest of the mesh can route back to us")
+            await self.announce()
+        except Exception as e:
+            print("could not announce at startup: {}".format(e))
+
     # automatically announces based on user config
     async def announce_loop(self):
+
+        await self.startup_announce()
+
         while True:
 
             should_announce = False
@@ -2491,7 +2554,7 @@ class ReticulumMeshChat:
             # pressed. Trying once more is what closes the loop.
             link_retried = False
             route_changed = False
-            if not link_established and self.config.link_request_retry_enabled.get():
+            if not link_established:
                 route_changed = await self.wait_for_route_change(
                     destination_hash, route_before, self.LINK_REQUEST_RETRY_WAIT_SECONDS)
                 link_retried = True
@@ -3366,18 +3429,6 @@ class ReticulumMeshChat:
             value = bool(data["message_alert_enabled"])
             self.config.message_alert_enabled.set(value)
 
-        if "path_request_on_send_failure_enabled" in data:
-            value = bool(data["path_request_on_send_failure_enabled"])
-            self.config.path_request_on_send_failure_enabled.set(value)
-
-        if "path_warm_on_startup_enabled" in data:
-            value = bool(data["path_warm_on_startup_enabled"])
-            self.config.path_warm_on_startup_enabled.set(value)
-
-        if "persist_paths_on_discovery_enabled" in data:
-            value = bool(data["persist_paths_on_discovery_enabled"])
-            self.config.persist_paths_on_discovery_enabled.set(value)
-
         if "autointerface_recovery_enabled" in data:
             value = bool(data["autointerface_recovery_enabled"])
             self.config.autointerface_recovery_enabled.set(value)
@@ -3410,11 +3461,9 @@ class ReticulumMeshChat:
             value = bool(data["auto_select_propagation_node_switching_enabled"])
             self.config.auto_select_propagation_node_switching_enabled.set(value)
 
-        if "opportunistic_escalation_seconds" in data:
-            self.config.opportunistic_escalation_seconds.set(int(data["opportunistic_escalation_seconds"]))
+        if "announce_on_startup_enabled" in data:
+            self.config.announce_on_startup_enabled.set(bool(data["announce_on_startup_enabled"]))
 
-        if "link_request_retry_enabled" in data:
-            self.config.link_request_retry_enabled.set(bool(data["link_request_retry_enabled"]))
 
         # update auto sync interval
         if "lxmf_preferred_propagation_node_auto_sync_interval_seconds" in data:
@@ -3700,9 +3749,6 @@ class ReticulumMeshChat:
             "last_announced_at": self.config.last_announced_at.get(),
             "theme": self.config.theme.get(),
             "message_alert_enabled": self.config.message_alert_enabled.get(),
-            "path_request_on_send_failure_enabled": self.config.path_request_on_send_failure_enabled.get(),
-            "path_warm_on_startup_enabled": self.config.path_warm_on_startup_enabled.get(),
-            "persist_paths_on_discovery_enabled": self.config.persist_paths_on_discovery_enabled.get(),
             "autointerface_recovery_enabled": self.config.autointerface_recovery_enabled.get(),
             "auto_resend_failed_messages_when_announce_received": self.config.auto_resend_failed_messages_when_announce_received.get(),
             "allow_auto_resending_failed_messages_with_attachments": self.config.allow_auto_resending_failed_messages_with_attachments.get(),
@@ -3717,8 +3763,7 @@ class ReticulumMeshChat:
             # settings page can show which relay is in use rather than a hash
             "lxmf_preferred_propagation_node_name": self.preferred_propagation_node_name(),
             "lxmf_preferred_propagation_node_hops": self.preferred_propagation_node_hops(),
-            "opportunistic_escalation_seconds": self.config.opportunistic_escalation_seconds.get(),
-            "link_request_retry_enabled": self.config.link_request_retry_enabled.get(),
+            "announce_on_startup_enabled": self.config.announce_on_startup_enabled.get(),
             "lxmf_preferred_propagation_node_auto_sync_interval_seconds": self.config.lxmf_preferred_propagation_node_auto_sync_interval_seconds.get(),
             "lxmf_preferred_propagation_node_last_synced_at": self.config.lxmf_preferred_propagation_node_last_synced_at.get(),
             "lxmf_user_icon_name": self.config.lxmf_user_icon_name.get(),
@@ -4127,9 +4172,19 @@ class ReticulumMeshChat:
             # why an opportunistic-only ladder dies quietly with the modem silent.
             # Escalating costs one link attempt and buys the one mechanism in
             # Reticulum that crosses hops without waiting for an announce.
+            #
+            # Both method fields are checked, matching Liberty Chat: desired_method
+            # is what we asked for and method is what LXMF used, and a message that
+            # went out as a single packet either way is one no transport node has a
+            # link table entry for.
+            sent_opportunistically = LXMF.LXMessage.OPPORTUNISTIC in (
+                getattr(lxmf_message, "method", None),
+                getattr(lxmf_message, "desired_method", None),
+            )
+
             if (self.config.direct_link_on_send_failure_enabled.get()
                     and not already_propagated
-                    and getattr(lxmf_message, "desired_method", None) == LXMF.LXMessage.OPPORTUNISTIC):
+                    and sent_opportunistically):
                 self.send_failed_message_over_direct_link(lxmf_message)
 
             # LCS: try to recover a direct route first. Direct delivery is better
@@ -4140,7 +4195,7 @@ class ReticulumMeshChat:
             # Reticulum only learns a route when something asks or the peer
             # announces, so without this a message that failed on a stale path sits
             # failed until that peer announces again.
-            elif self.config.path_request_on_send_failure_enabled.get() and not already_propagated:
+            elif not already_propagated:
                 self.queue_failed_message_for_path_request(lxmf_message, wants_propagation)
 
             # LCS: the last rung. A propagated message that failed means the node
@@ -4154,7 +4209,7 @@ class ReticulumMeshChat:
             # either; that exists only in the opportunistic branch. So the node is
             # the one destination in the whole delivery ladder with no recovery at
             # all, which is worth fixing given everything falls back to it.
-            elif self.config.path_request_on_send_failure_enabled.get():
+            else:
                 propagation_node = None
                 try:
                     propagation_node = self.message_router.get_outbound_propagation_node()
@@ -4165,13 +4220,14 @@ class ReticulumMeshChat:
                     # nothing was configured, so the send cannot have been aimed
                     # anywhere and there is nothing useful to ask about
                     print("A propagated message failed with no propagation node configured")
+
+                    # nothing to recover, so fall back to whatever the message
+                    # was told to do on failure
+                    if wants_propagation:
+                        self.send_failed_message_via_propagation_node(lxmf_message)
                 else:
                     self.queue_failed_message_for_path_request(
                         lxmf_message, False, path_destination_hash=propagation_node.hex())
-
-            # path requests turned off, so behave as before
-            elif wants_propagation:
-                self.send_failed_message_via_propagation_node(lxmf_message)
 
         # update state
         self.on_lxmf_sending_state_updated(lxmf_message)
@@ -4911,13 +4967,27 @@ class ReticulumMeshChat:
 
         return destination_hashes
 
+    # LCS: off, and no longer a setting.
+    #
+    # The saved path table is loaded at startup, so the sweep's job is already
+    # done for every peer whose route survived, and what it adds for the rest
+    # is a burst of path requests on a link that may not have the airtime. It
+    # also cannot do the thing that actually matters after a restart: a path
+    # request is answered from the cache of the first node holding an entry
+    # and never crosses a hop, so it repairs nothing further out. The startup
+    # announce does that instead.
+    #
+    # Left in place rather than deleted, so it can be switched back on here if
+    # a network ever turns up where it earns its airtime.
+    PATH_WARM_ON_STARTUP = False
+
     # LCS: ask the network for a path to each recent peer we do not already have one
     # for. Staggered, because on a slow link a burst of requests is worse than no
     # requests at all.
     async def warm_paths_for_known_peers(self):
 
         try:
-            if not self.config.path_warm_on_startup_enabled.get():
+            if not self.PATH_WARM_ON_STARTUP:
                 return
 
             await asyncio.sleep(self.PATH_WARM_START_DELAY_SECONDS)
@@ -4960,9 +5030,6 @@ class ReticulumMeshChat:
     def schedule_path_table_persist(self):
 
         try:
-            if not self.config.persist_paths_on_discovery_enabled.get():
-                return
-
             # a shared instance does not own the path table
             if self.reticulum.is_connected_to_shared_instance:
                 return
@@ -5649,94 +5716,6 @@ class ReticulumMeshChat:
 
         threading.Thread(target=deliver, daemon=True).start()
 
-        self.arm_opportunistic_escalation(lxmf_message)
-
-    OPPORTUNISTIC_ESCALATION_POLL_SECONDS = 0.5
-
-    # LCS: stop waiting on an opportunistic send that is not going to land.
-    #
-    # LXMF gives up on its own, eventually. The opportunistic branch of
-    # process_outbound runs through MAX_DELIVERY_ATTEMPTS (5) with
-    # DELIVERY_RETRY_WAIT (10s) between them, and folds in one
-    # drop-and-rediscover with a PATH_REQUEST_WAIT (7s) pause, all paced by a
-    # PROCESSING_INTERVAL (4s) job loop. On a dead route that works out at
-    # roughly a minute of packets into a hole before fail_message fires -- and
-    # fail_message is what starts the link attempt, which is the only step in
-    # the whole ladder that makes a transport node go and ask the rest of the
-    # network.
-    #
-    # So the most useful thing available is queued behind the least useful
-    # thing available. This cuts that short: once the deadline passes with the
-    # message still undelivered, it is taken out of the outbound queue and
-    # handed to the link rung directly.
-    #
-    # Only the repeats are given up on, not the recovery. Everything below the
-    # link -- the path refresh, the propagation node, the announce -- still
-    # runs in the same order it would have.
-    def arm_opportunistic_escalation(self, lxmf_message):
-
-        if getattr(lxmf_message, "desired_method", None) != LXMF.LXMessage.OPPORTUNISTIC:
-            return
-
-        if not self.config.direct_link_on_send_failure_enabled.get():
-            return
-
-        try:
-            deadline_seconds = float(self.config.opportunistic_escalation_seconds.get())
-        except Exception:
-            deadline_seconds = 0
-
-        if deadline_seconds <= 0:
-            return
-
-        # states LXMF will not move on from, so there is nothing left to wait for
-        settled = (
-            LXMF.LXMessage.DELIVERED,
-            LXMF.LXMessage.FAILED,
-            LXMF.LXMessage.CANCELLED,
-            LXMF.LXMessage.REJECTED,
-        )
-
-        def watchdog():
-
-            deadline = time.time() + deadline_seconds
-            while time.time() < deadline:
-                time.sleep(self.OPPORTUNISTIC_ESCALATION_POLL_SECONDS)
-                if lxmf_message.state in settled:
-                    return
-
-            # the method can have been changed under us by a failure that beat
-            # the deadline, in which case the ladder is already further along
-            if getattr(lxmf_message, "desired_method", None) != LXMF.LXMessage.OPPORTUNISTIC:
-                return
-
-            try:
-                router = self.message_router
-
-                # Taken under the router's own lock, because process_outbound
-                # iterates this list on its job thread and removing from
-                # underneath it would skip a message or raise.
-                with router.outbound_processing_lock:
-                    if lxmf_message.state in settled:
-                        return
-                    if lxmf_message not in router.pending_outbound:
-                        return
-                    router.pending_outbound.remove(lxmf_message)
-
-            except Exception as e:
-                print("could not take {} out of the outbound queue: {}".format(
-                    lxmf_message.destination_hash.hex(), e,
-                ))
-                return
-
-            print("Opportunistic delivery to {} has not landed in {}s, escalating early".format(
-                lxmf_message.destination_hash.hex(), deadline_seconds,
-            ))
-
-            self.send_failed_message_over_direct_link(lxmf_message)
-
-        threading.Thread(target=watchdog, daemon=True).start()
-
     # LCS: re-send an opportunistic message over a link.
     #
     # The rung between opportunistic and propagation. try_propagation_on_fail is
@@ -6032,10 +6011,6 @@ class ReticulumMeshChat:
         # message the hash the database row below is keyed on.
         await asyncio.to_thread(self.message_router.handle_outbound, lxmf_message)
 
-        # LCS: start the clock on the opportunistic attempt, so a dead route
-        # costs seconds rather than the full minute LXMF spends retrying
-        self.arm_opportunistic_escalation(lxmf_message)
-
         # upsert lxmf message to database
         self.db_upsert_lxmf_message(lxmf_message)
 
@@ -6135,24 +6110,20 @@ class ReticulumMeshChat:
         if self.config.auto_resend_failed_messages_when_announce_received.get():
             AsyncUtils.run_async(self.resend_failed_messages_for_destination(destination_hash.hex()))
 
-    # LCS: how the preferred propagation node is chosen and when it changes.
+    # LCS: how the preferred propagation node is chosen.
     #
-    # A node is only worth using if it is close and alive, and both of those
-    # change while the app runs: a relay goes down, a nearer one comes up, the
-    # radio path shifts and what was four hops away is now two. Adopting the
-    # first node ever heard and never looking again -- which is what this used
-    # to do -- leaves you pinned to whichever one happened to announce first,
-    # which on startup is close to random.
+    # Ranked on hop count with the most recent announce as the tiebreak, which
+    # is the same ordering Liberty Chat uses for its relay list. By default it
+    # only ever fills an empty selection, also like Liberty Chat: select once,
+    # then leave it alone.
     #
-    # Hops first, most recent announce as the tiebreak, which is the same
-    # ordering Liberty Chat uses for its relay list.
-    #
-    # Where this deliberately differs from "switch to anything newer": two
-    # nodes at the same distance announcing in turn would hand the preference
-    # back and forth forever, and every handover cancels an in-flight sync and
-    # resets the sync timestamp. So recency only decides between equals, or
-    # rescues us from a node that has gone quiet.
-    PROPAGATION_NODE_STALE_SECONDS = 3 * 3600        # no announce for this long means gone
+    # Switching while running is opt-in, and narrow when it is on. v2.0.8 tried
+    # to be clever about it -- replacing a node that had gone quiet, or one
+    # missing from the announce table -- and that took working relays away from
+    # people, because a node missing from the announces is not a node known to
+    # be broken. It can be a hand-entered hash, a pruned announce, or our own
+    # local node before it has announced. The only thing that unseats a
+    # selected node now is a visibly closer one on a route we hold.
     PROPAGATION_NODE_SWITCH_COOLDOWN_SECONDS = 300   # minimum gap between switches
 
     # transfer states that mean a sync is underway and a switch would abort it
@@ -6172,18 +6143,9 @@ class ReticulumMeshChat:
 
         candidates = []
 
-        try:
-            own_node_hash = self.message_router.propagation_destination.hexhash
-        except Exception:
-            own_node_hash = None
-
         announces = database.Announce.select().where(database.Announce.aspect == "lxmf.propagation")
 
         for announce in announces:
-
-            # using our own local node as our own relay is not a route to anywhere
-            if own_node_hash is not None and announce.destination_hash == own_node_hash:
-                continue
 
             parsed = self.parse_lxmf_propagation_node_app_data(announce.app_data)
 
@@ -6230,12 +6192,14 @@ class ReticulumMeshChat:
 
             # closest wins, most recently heard breaks the tie
             candidates.sort(key=lambda node: (node["hops"], -node["announced_at"]))
-            best = candidates[0]
 
             current_hash = self.config.lxmf_preferred_propagation_node_destination_hash.get()
 
+            # Nothing selected: take the best one going. This is the whole of
+            # what auto-select does by default, and it is what Liberty Chat
+            # does -- select once, then leave it alone.
             if current_hash is None or current_hash == "":
-                self.adopt_propagation_node(best, "nothing was selected")
+                self.adopt_propagation_node(candidates[0], "nothing was selected")
                 return
 
             if not self.config.auto_select_propagation_node_switching_enabled.get():
@@ -6244,45 +6208,28 @@ class ReticulumMeshChat:
             current = next((node for node in candidates
                             if node["destination_hash"] == current_hash), None)
 
-            now = time.time()
-            current_silence = None
-            if current is not None:
-                current_silence = now - current["announced_at"]
-
-            # The node we are pointed at has stopped announcing, been switched
-            # off by its operator, or we have never actually heard from it.
-            # Being the closest is no recommendation when it is also dead, so
-            # it is taken out of the running rather than ranked.
-            if current is None or current_silence > self.PROPAGATION_NODE_STALE_SECONDS:
-
-                live = [node for node in candidates
-                        if now - node["announced_at"] <= self.PROPAGATION_NODE_STALE_SECONDS]
-
-                # everything has gone quiet, so there is nothing better to move
-                # to and dropping the one we have would only make it worse
-                if len(live) == 0:
-                    return
-
-                best = live[0]
-                if best["destination_hash"] == current_hash:
-                    return
-
-                if current is None:
-                    reason = "the selected node is no longer advertising"
-                else:
-                    reason = "the selected node has not announced in {}".format(
-                        self.format_duration(current_silence))
-
-            elif best["destination_hash"] == current_hash:
+            # A node we cannot see in the announces is not a node we know to be
+            # broken. It may be one the user typed in by hand, one whose
+            # announce has been pruned, or our own local node before it has
+            # announced. Replacing it on that basis is how v2.0.8 took a
+            # working relay away from people, so absence is left alone -- the
+            # only thing that unseats a node is a better one we can see.
+            if current is None:
                 return
 
-            elif best["hops"] < current["hops"]:
-                reason = "it is {} hops away instead of {}".format(best["hops"], current["hops"])
+            # Only a strictly closer node, on a route we actually have, is
+            # worth a handover. A switch cancels an in-flight sync and resets
+            # the sync clock, and hop count is read out of the path table --
+            # which says the route exists, not that it works -- so anything
+            # less than a clear improvement is not worth acting on.
+            best = next((node for node in candidates
+                         if node["hops"] < current["hops"]
+                         and node["hops"] < RNS.Transport.PATHFINDER_M), None)
 
-            else:
-                # same distance or farther, and the one in use is alive, so
-                # there is nothing to gain and a handover costs an in-flight sync
+            if best is None:
                 return
+
+            reason = "it is {} hops away instead of {}".format(best["hops"], current["hops"])
 
             # a switch cancels whatever sync is in flight and resets the sync
             # clock, so it is not worth doing twice in quick succession
@@ -6325,16 +6272,6 @@ class ReticulumMeshChat:
         except Exception as e:
             print("could not broadcast the propagation node change: {}".format(e))
 
-    @staticmethod
-    def format_duration(seconds: float):
-
-        seconds = int(max(0, seconds))
-        if seconds < 60:
-            return "{}s".format(seconds)
-        if seconds < 3600:
-            return "{}m".format(seconds // 60)
-
-        return "{}h".format(seconds // 3600)
 
     # handle an announce received from reticulum, for an lxmf propagation node address
     # NOTE: cant be async, as Reticulum doesn't await it
@@ -6743,14 +6680,16 @@ class Config:
     database_version = IntConfig("database_version", None)
     display_name = StringConfig("display_name", "Anonymous Peer")
     auto_announce_enabled = BoolConfig("auto_announce_enabled", True)
-    # LCS: 3 hours, down from 6. An announce is the only thing that installs a
-    # route back to us on the rest of the mesh -- a path request asks about a
-    # destination and says nothing about the asker -- and those routes are lost
-    # whenever a peer's interface churns, not just when they time out. Six hours
-    # left long windows where the far side could not answer us at all. Liberty
-    # Chat announces every 3 hours, so this also stops the two drifting apart.
+    # LCS: 1 hour, down from 3 (and 6 before that). An announce is the only
+    # thing that installs a route back to us on the rest of the mesh -- a path
+    # request asks about a destination and says nothing about the asker -- and
+    # those routes are lost whenever a hop's interface churns, not just when
+    # they time out. So this interval is the worst case for how long a peer can
+    # be unable to reach us across a transport node whose entry has gone stale,
+    # and on an RF leg an announce is the only repair there is. Liberty Chat
+    # moved to 1 hour for the same reason, which also keeps the two in step.
     # Only affects installs that never set it; a saved value still wins.
-    auto_announce_interval_seconds = IntConfig("auto_announce_interval_seconds", 10800)
+    auto_announce_interval_seconds = IntConfig("auto_announce_interval_seconds", 3600)
     last_announced_at = IntConfig("last_announced_at", None)
     theme = StringConfig("theme", "light")
     auto_resend_failed_messages_when_announce_received = BoolConfig("auto_resend_failed_messages_when_announce_received", True)
@@ -6768,7 +6707,6 @@ class Config:
     lxmf_user_icon_background_colour = StringConfig("lxmf_user_icon_background_colour", None)
     telephone_enabled = BoolConfig("telephone_enabled", True)
     message_alert_enabled = BoolConfig("message_alert_enabled", True)
-    path_request_on_send_failure_enabled = BoolConfig("path_request_on_send_failure_enabled", True)
 
     # LCS: escalate a failed opportunistic send to a link before falling back to
     # a propagation node. The link attempt is the only step in the ladder that
@@ -6776,32 +6714,35 @@ class Config:
     # behalf, so on a multi-hop mesh it is what gets a radio to transmit.
     direct_link_on_send_failure_enabled = BoolConfig("direct_link_on_send_failure_enabled", True)
 
-    # LCS: how long an opportunistic send is given before the ladder moves on.
+    # LCS: announce once at startup.
     #
-    # LXMF's own opportunistic ladder takes about a minute to give up: five
-    # retries at DELIVERY_RETRY_WAIT (10s) apart, with a drop-and-rediscover
-    # and a PATH_REQUEST_WAIT (7s) pause folded in, all driven by a 4 second
-    # job loop. Only when the attempt count runs out does fail_message fire and
-    # the escalation to a link begin. On a route that is actually dead, every
-    # one of those repeats is a packet into a hole, and the step that could fix
-    # it -- the link attempt -- waits behind all of them.
+    # The saved path table is our own. Restoring it gives this node a route
+    # out; it does nothing for the route back, which lives in the path tables
+    # of the Command Center, the far side's Command Center and the peer. A
+    # message only lands if those hold a live route, and a delivery proof only
+    # returns if the route to us is live at every hop.
     #
-    # 25 seconds covers the first send, the rediscovery LXMF does on its own,
-    # and the attempt that follows it, and cuts the three repeats after that.
-    # Raise it on a slow radio where a working path legitimately takes longer
-    # than that to answer; set it to 0 to leave LXMF's ladder alone.
-    opportunistic_escalation_seconds = IntConfig("opportunistic_escalation_seconds", 25)
-
-    # LCS: try the link a second time after the first attempt fails.
+    # Nothing local repairs those, and a path request cannot either -- the
+    # first node holding any entry answers it from cache and stops it. An
+    # announce is the only packet that every transport node rebroadcasts, and
+    # it carries a fresh emission timestamp, so it is accepted over whatever
+    # stale entry each hop held.
     #
-    # The first failure is not a wasted trip: it is what makes the transport
-    # nodes along the way go and look. Giving up on it reports the state of the
-    # network before the button did its work rather than after.
-    link_request_retry_enabled = BoolConfig("link_request_retry_enabled", True)
+    # Without this, last_announced_at persisting across a restart left MeshChat
+    # silent for the remainder of the auto-announce interval, during which the
+    # far side had no way to reach it.
+    announce_on_startup_enabled = BoolConfig("announce_on_startup_enabled", True)
 
     # LCS: keep watching for a better propagation node instead of adopting the
     # first one heard and never looking again.
-    auto_select_propagation_node_switching_enabled = BoolConfig("auto_select_propagation_node_switching_enabled", True)
+    #
+    # Off by default. Liberty Chat selects once and stops, and a switch is not
+    # free: it cancels an in-flight sync, resets the sync clock, and a hop
+    # count read out of the path table says nothing about whether that route
+    # actually works -- a stale entry two hops away outranks a node that is
+    # further off and reachable. Opt in if you have several relays and want the
+    # closest one tracked.
+    auto_select_propagation_node_switching_enabled = BoolConfig("auto_select_propagation_node_switching_enabled", False)
 
     # LCS: announce when a peer cannot be reached. A path request stops at the
     # first transport node that holds an entry, so when one comes back empty
@@ -6809,12 +6750,6 @@ class Config:
     # that hears it and repairs their route to us instead, which is enough for
     # their next message to open a link we can deliver over.
     announce_on_unreachable_peer_enabled = BoolConfig("announce_on_unreachable_peer_enabled", True)
-    # Off by default since v2.0.3. The saved path table is loaded at startup, so
-    # the sweep's job is already done for every peer whose cached announce
-    # survived, and what it adds for the rest is a burst of path requests on a
-    # link that may be LoRa. Turn it on in Settings if you want the backstop.
-    path_warm_on_startup_enabled = BoolConfig("path_warm_on_startup_enabled", False)
-    persist_paths_on_discovery_enabled = BoolConfig("persist_paths_on_discovery_enabled", True)
     autointerface_recovery_enabled = BoolConfig("autointerface_recovery_enabled", True)
 
 # FIXME: we should probably set this as an instance variable of ReticulumMeshChat so it has a proper home, and pass it in to the constructor?

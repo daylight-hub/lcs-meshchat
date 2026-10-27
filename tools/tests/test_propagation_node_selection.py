@@ -210,7 +210,6 @@ class Harness:
             propagation_transfer_state=0x05 if busy else 0x00,
         )
         self.last_propagation_node_switch_at = last_switch_at
-        self.PROPAGATION_NODE_STALE_SECONDS = consts["PROPAGATION_NODE_STALE_SECONDS"]
         self.PROPAGATION_NODE_SWITCH_COOLDOWN_SECONDS = consts["PROPAGATION_NODE_SWITCH_COOLDOWN_SECONDS"]
         self.PROPAGATION_SYNC_BUSY_STATES = (0x01, 0x02, 0x03, 0x04, 0x05, 0x06)
 
@@ -222,11 +221,10 @@ class Harness:
         self.config.lxmf_preferred_propagation_node_destination_hash.set(
             node["destination_hash"])
 
-    def format_duration(self, seconds):
-        return "{}h".format(int(seconds) // 3600)
 
-
-evaluate_ns = {"time": time, "print": lambda *a, **k: None}
+evaluate_ns = {"time": time, "print": lambda *a, **k: None,
+               "RNS": types.SimpleNamespace(
+                   Transport=types.SimpleNamespace(PATHFINDER_M=128))}
 evaluate = lift("evaluate_auto_propagation_node", evaluate_ns)
 
 NOW = time.time()
@@ -273,36 +271,43 @@ check("a fresher announce at the same distance does not cause a switch",
 check("  (which is what stops two equidistant nodes trading the slot forever)",
       h.adopted == [])
 
-# the node in use has gone quiet
-stale = consts["PROPAGATION_NODE_STALE_SECONDS"] + 60
-h = Harness(candidates=[node("aa", 2, age_seconds=stale),
+# A node that has gone quiet is NOT replaced. v2.0.8 did replace it, and that
+# is how people lost a working relay: silence in the announce table is not
+# evidence the node is down -- announce intervals are hours long, and announces
+# get pruned -- while a handover definitely costs an in-flight sync.
+h = Harness(candidates=[node("aa", 2, age_seconds=4 * 3600),
                         node("bb", 4, age_seconds=30)], current="aa")
 evaluate(h)
-check("a node that stopped announcing is replaced even by a farther one",
-      h.adopted and h.adopted[0][0] == "bb")
+check("a node that has gone quiet is not replaced by a farther one",
+      h.adopted == [])
 
-# quiet but nothing fresher to move to
-h = Harness(candidates=[node("aa", 2, age_seconds=stale),
-                        node("bb", 4, age_seconds=stale + 600)], current="aa")
-evaluate(h)
-check("but not by one that has been quiet even longer", h.adopted == [])
-
-# the node in use has vanished from the candidate list entirely, which is what
-# an operator switching propagation off looks like after the parser filters it
+# The node in use is absent from the announces entirely. This is the case that
+# broke v2.0.8: it reads as "no longer advertising" but it is equally a hash
+# typed in by hand, an announce that has been pruned, or our own local node
+# before it has announced.
 h = Harness(candidates=[node("bb", 6)], current="aa")
 evaluate(h)
-check("a node that is no longer advertising at all is replaced",
-      h.adopted and h.adopted[0][0] == "bb")
+check("a node missing from the announces is left alone, not replaced",
+      h.adopted == [])
+check("  (it may be a hand-entered hash or a pruned announce, not a dead node)",
+      h.adopted == []
+      and h.config.lxmf_preferred_propagation_node_destination_hash.get() == "aa")
+
+# a closer node with no route at all is no use
+h = Harness(candidates=[node("aa", 6), node("bb", 128)], current="aa")
+evaluate(h)
+check("a node with no known route is never switched to",
+      h.adopted == [])
 
 # manual selection
 h = Harness(candidates=[node("aa", 9), node("bb", 1)], current="aa", auto=False)
 evaluate(h)
 check("a hand-picked node is never overridden", h.adopted == [])
 
-# switching turned off
+# switching turned off, which is the default
 h = Harness(candidates=[node("aa", 9), node("bb", 1)], current="aa", switching=False)
 evaluate(h)
-check("switching can be turned off without turning off auto-select",
+check("with switching off, even a much closer node does not take over",
       h.adopted == [])
 
 # ...but a first selection still happens with switching off
@@ -341,8 +346,12 @@ check("no candidates means no change, not a cleared selection",
 print()
 
 _candidates = body_of("propagation_node_candidates")
-check("our own local node is not offered as our own relay",
-      "propagation_destination.hexhash" in _candidates)
+# Our own local node stays a candidate. Excluding it looked tidy and was
+# wrong: someone running a local propagation node and using it as their relay
+# had it taken away, because it was absent from the candidate list and so read
+# as "no longer advertising".
+check("our own local node is still a candidate",
+      "propagation_destination.hexhash" not in _candidates)
 check("a node its operator disabled is not a candidate",
       "enabled" in _candidates and "continue" in _candidates)
 check("distance is measured live rather than read from the announce row",
@@ -377,10 +386,31 @@ check("the node list reports the advertised name alongside the operator name",
 check("and how far away each node is, so the ranking is visible",
       "'hops': hops" in _list)
 
-check("the stale window is long enough to survive a missed announce",
-      consts["PROPAGATION_NODE_STALE_SECONDS"] >= 2 * 3600)
-check("and the switch cooldown is long enough not to thrash a sync",
+check("the switch cooldown is long enough not to thrash a sync",
       consts["PROPAGATION_NODE_SWITCH_COOLDOWN_SECONDS"] >= 60)
+
+# Silence is no longer a reason to switch, so there is no staleness window to
+# tune -- the whole idea went with it.
+check("silence is not a switching criterion any more",
+      "PROPAGATION_NODE_STALE_SECONDS" not in SOURCE.read_text(encoding="utf-8"))
+
+# Liberty Chat selects once and stops. That is what MeshChat does out of the
+# box now too, so an install that never touches Settings behaves identically.
+_config_class = next((n for n in ast.walk(tree)
+                      if isinstance(n, ast.ClassDef) and n.name == "Config"), None)
+_defaults = {}
+if _config_class is not None:
+    for _node in _config_class.body:
+        if not isinstance(_node, ast.Assign) or not isinstance(_node.value, ast.Call):
+            continue
+        for _target in _node.targets:
+            if isinstance(_target, ast.Name) and len(_node.value.args) >= 2:
+                _defaults[_target.id] = const_value(_node.value.args[1])
+
+check("switching while running is off by default, matching Liberty Chat",
+      _defaults.get("auto_select_propagation_node_switching_enabled") is False)
+check("and auto-select itself is still on, so an empty selection gets filled",
+      _defaults.get("auto_select_propagation_node") is True)
 
 
 print(f"\n{len(ok)} passed, {len(fail)} failed")

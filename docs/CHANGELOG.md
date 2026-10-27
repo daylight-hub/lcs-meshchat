@@ -5,91 +5,121 @@ section matching the version being built and uses it as the release body.
 
 ### What's new in v2.0.8
 
-**A stalled send gets to the link attempt in about 25 seconds instead of a
-minute.** When a route is dead, LXMF's opportunistic branch repeats the same
-packet up to five times at ten second intervals, with a drop-and-rediscover and
-a seven second pause folded in, before `fail_message` fires. Only then does the
-escalation to a link begin — and the link attempt is the only step in the whole
-ladder that makes a transport node go and ask the rest of the network on your
-behalf. The most useful step was queued behind the least useful one.
+**MeshChat now announces once at startup, which is the fix for a restart
+leaving you unreachable.** This is the headline, and it is worth explaining
+rather than just listing, because it is not what the saved path table does.
 
-A send that has not landed by the deadline is now taken out of the outbound
-queue and handed straight to the link rung. Nothing below it changes: the path
-refresh, the propagation node and the announce all still run in the same order.
-The deadline is in Settings under Messages, with a Never option that restores
-LXMF's own pacing, and it is worth raising on a slow radio where a working path
-legitimately takes longer than that to answer.
+The saved path table is *ours*. Restoring it tells this node "to reach that
+peer, hand the packet to the Command Center" — and that is the whole of what it
+tells anyone. The Command Center keeps its own path table, the far side's
+Command Center keeps another, and the peer keeps a third. A message only lands
+if all of those hold a live route, and a delivery proof only comes home if the
+route back to *us* is live at every hop too. Restoring our own table repairs
+exactly one of those four, and not the half that gets the answer back.
 
-To be clear about what this is not: it is not the Auto resend setting. That one
-only fires when an announce arrives from the peer, and it plays no part in the
-minute a failing send used to take.
+A path request cannot repair the rest either. The first transport node holding
+any entry for the destination answers it out of its own packet cache and stops
+it there, so it never crosses a hop.
 
-**Link Request tries twice.** A link request that goes unanswered is what makes
-the transport nodes it passed through mark their own route unresponsive and
-search on every other interface — which on a gateway bridging a local network
-to a radio is the radio. That search comes back seconds *after* the attempt
-that failed, so reporting failure at that moment described the network as it
-was before the button was pressed. The button now waits for the route to
-change, attempts the link again, and only announces if the second attempt fails
-too. When the second attempt succeeds it says so, because that is the mechanism
-working rather than luck.
+An announce is the only packet we emit that every transport node rebroadcasts
+rather than consumes, and it carries a fresh emission timestamp, so it is
+accepted over whatever stale entry each hop was holding. One announce repairs
+the route to us the whole way along.
 
-The route is tracked by the announce behind the path table entry rather than by
-`has_path`, which stays true throughout a rediscovery and tells you nothing.
+The bug was that `last_announced_at` is saved to disk. After a restart the
+auto-announce timer carried on from *before* the restart, so MeshChat stayed
+silent for the remainder of the interval — up to three hours on the old default
+— and during that window the far side had no route back. Sends failed waiting
+for a proof that could not reach us. It also explains the oldest symptom in
+this fork: announcing by hand made messages start flowing again.
 
-**Propagation node auto-select picks the closest node, and keeps looking.** It
-used to adopt the first `lxmf.propagation` announce it ever heard and stop,
-which on startup is close to random. Selection is now by hop count, with the
-most recent announce breaking a tie — the same ordering Liberty Chat uses for
-its relay list — and it is reconsidered on every propagation announce, at
-startup, and when auto-select is switched back on.
+It announces about fifteen seconds after launch, once interfaces are up and
+AutoInterface has found its peers, and skips it if we announced within the last
+five minutes so repeated restarts do not put a burst on the air. There is a
+toggle in Settings under Messages.
 
-A node closer than the one in use takes over, as does any node still announcing
-when the one in use has been quiet for three hours or has been switched off by
-its operator. A node that has gone quiet is dropped from the ranking rather
-than kept at the top for being nearby.
+**The default announce interval is now 1 hour, down from 3.** The interval is
+the worst case for how long a peer can be unable to reach us across a transport
+node whose entry has gone stale, and on an RF leg the announce is the only
+repair there is. Liberty Chat moved to an hour for the same reason, which keeps
+the two in step. Only affects installs that never set it; a saved value wins.
 
-Equal distance deliberately does **not** cause a switch. Two nodes the same
-number of hops away would otherwise hand the slot back and forth every time
-they announced, and each handover cancels an in-flight sync and resets the sync
-clock. Switches are also held off for five minutes after the last one, and
-while a sync is running. Picking a node by hand still turns auto-select off and
-is never overridden, and the switching behaviour has its own toggle in
-Settings.
+**The early-escalation watchdog from the first 2.0.8 is gone.** It pulled a
+message out of LXMF's `pending_outbound` when a deadline passed and handed it
+to the link rung early. That was my deviation — Liberty Chat does not do it,
+and v2.0.7 did not either — and it made sending worse rather than faster,
+because it raced the state machine that owns that queue and cut across LXMF's
+own drop-and-rediscover step mid-flight.
 
-**Propagation nodes show the name they advertise.** Operators name the node
-itself, and that name rides along in the announce metadata — it is what Liberty
-Chat displays. MeshChat could not reach it, because the announce parser was
-still reading the three field layout LXMF used years ago against announces that
-have carried seven fields since 0.5.
+The ladder is back to where v2.0.7 had it: the escalation to a link runs from
+LXMF's failed callback, after its opportunistic retries are spent. Same order
+as Liberty Chat's — opportunistic, link, rediscover, retry, propagation,
+announce, fail. The minute that costs should matter much less now that the
+route back is repaired at startup. If it still does, that is worth measuring
+before tuning rather than guessing at again.
 
-Everything it read had moved. Field 0 is the legacy-propagation-support flag,
-hardcoded `False`, and it was being read as "enabled" — so **every modern
-propagation node was displayed as Disabled by Operator**. Field 2 is the real
-enabled flag, and it was being read as the per-transfer limit, so the limit
-displayed as `True` or `False`. Only the timebase happened to still line up.
+**Propagation node switching is off by default and far narrower when on.** The
+first 2.0.8 replaced a selected node when it had gone quiet, and when it was
+missing from the announce table altogether. Both were wrong, and the second one
+is how people lost a working relay: a node absent from the announces is not a
+node known to be broken. It can be a hash typed in by hand, an announce that
+has been pruned, or your own local propagation node before it has announced —
+and the first 2.0.8 also excluded your own local node from the candidates,
+which guaranteed that reading for anyone using it.
 
-The parser now reads the current layout, falls back to the old one for
-announces that use it, and pulls the node's name and stamp cost out of the
-metadata. The propagation nodes page shows the advertised name, the operator
-name beneath it when both exist, and how many hops away the node is. The
-settings page shows the same for the node in use, so the hash in the box is
-identifiable.
+Your own local node is a candidate again, absence never unseats a selection,
+and silence never does either. The only thing that replaces a node in use is a
+visibly closer one on a route we actually hold — and that behaviour is now
+opt-in. Out of the box, auto-select fills an empty selection and then leaves it
+alone, which is exactly what Liberty Chat does.
 
-**Ping no longer gives up on a route it could repair.** It asked with a bare
-`request_path` and waited, which cannot replace an entry Reticulum already
-holds, then reported "could not find path to destination" when what had
-actually failed was recalling the peer's identity. It now goes through
-`refresh_path` when no route is known, leaves an existing route alone — it is
-measuring that route, so expiring it would measure a different one — and says
-what actually went wrong.
+**Kept from the first 2.0.8:** the propagation announce parser fix, which was
+reading the three field layout LXMF used years ago against announces that have
+carried seven since 0.5 — field 0 is the legacy-support flag, hardcoded
+`False`, and reading it as "enabled" made **every modern propagation node
+display as Disabled by Operator**, while field 2, the real enabled flag, showed
+up as the per-transfer limit. With the current layout parsed, the node's
+advertised name and stamp cost become reachable, so the nodes page shows the
+advertised name, the operator name beneath it, and the hop count, and the
+settings page shows the same for the node in use.
 
-Ping and Link Request are not duplicates, and both are worth keeping. Ping
-sends one packet over whatever route exists and reports round trip time, signal
-and hops: it measures. Link Request repairs the route and proves it by opening
-a link: it fixes.
+Also kept: Ping going through `refresh_path` instead of a bare `request_path`
+when no route is known, and reporting what actually failed. Ping measures a
+route; Link Request repairs one. They are not duplicates.
 
-353 checks across eight suites.
+**Link Request always tries twice.** The second attempt is a second chance
+after the search the first failure provokes, and it cannot affect sending
+because it only runs when you press the button. No longer a setting.
+
+**Four settings are gone, and what they controlled is now fixed.** Each of
+them was a way to turn off something there is no good reason to turn off, and
+every one was a way for an install to end up quietly broken.
+
+*Path request on send failure* is now always on. Off, a message that failed on
+a stale path waited for the peer's next announce — an hour away at best — which
+from the outside is indistinguishable from the message being lost.
+
+*Save paths as they are learned* is now always on. Reticulum writes its path
+table on a clean shutdown and otherwise every twelve hours, so off meant a hard
+kill threw away most of what had been learned.
+
+*Request paths on startup* is now permanently off, and the saved path table is
+still loaded at startup exactly as before — they were always separate things.
+The sweep could not do what matters after a restart anyway: a path request is
+answered from the cache of the first node holding an entry and never crosses a
+hop, so it repairs nothing further out. The startup announce does that instead.
+The code is still there behind a constant, so it can come back if a network
+ever turns up where it earns its airtime.
+
+*Retry the Link Request button* is now always on, as above.
+
+**One more parity fix.** The escalation now checks both of LXMF's method
+fields — `desired_method`, what was asked for, and `method`, what LXMF
+actually used — which is what Liberty Chat does. Either being opportunistic
+means the message went out as a single packet, and so no transport node along
+the way holds a link table entry for it.
+
+361 checks across eight suites.
 
 ### What's new in v2.0.7
 

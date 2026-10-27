@@ -113,91 +113,24 @@
                         <div class="text-sm text-gray-700 dark:text-gray-300">When enabled, messages that fail to send will be sent to the configured propagation node.</div>
                     </div>
 
-                    <!-- LCS: how long the opportunistic attempt gets before the ladder moves on -->
-                    <div class="p-2">
-                        <label class="block mb-1 text-sm font-medium text-gray-900 dark:text-gray-100">Escalate a stalled send after</label>
-                        <div>
-                            <select v-model="config.opportunistic_escalation_seconds" @change="onOpportunisticEscalationSecondsChange" class="bg-gray-50 dark:bg-zinc-700 border border-gray-300 dark:border-zinc-600 text-gray-900 dark:text-gray-100 text-sm rounded-lg focus:ring-blue-500 focus:border-blue-500 dark:focus:ring-blue-600 dark:focus:border-blue-600 block w-full p-2.5">
-                                <option :value="0">Never (let LXMF finish its retries)</option>
-                                <option :value="15">15 seconds</option>
-                                <option :value="25">25 seconds (recommended)</option>
-                                <option :value="40">40 seconds</option>
-                                <option :value="60">60 seconds</option>
-                            </select>
-                        </div>
-                        <div class="mt-1 text-sm text-gray-700 dark:text-gray-300">
-                            Messages go out opportunistically first, as a single packet, which is
-                            the cheapest way to deliver when the route is good. When it is not,
-                            LXMF spends around a minute repeating that packet before it gives up
-                            and the link attempt begins — and the link attempt is the only step
-                            that makes a transport node go looking on your behalf. This cuts the
-                            repeats short and gets to it sooner. Raise it if a working radio path
-                            legitimately takes longer than this to answer.
-                        </div>
-                    </div>
-
+                    <!-- LCS: the half of the round trip nothing local can repair -->
                     <div class="p-2">
                         <div class="flex items-start">
                             <div class="flex items-center h-5">
-                                <input v-model="config.link_request_retry_enabled" @change="onLinkRequestRetryEnabledChange" type="checkbox" class="w-4 h-4 border border-gray-300 dark:border-zinc-600 rounded bg-gray-50 dark:bg-zinc-700 focus:ring-3 focus:ring-blue-300 dark:focus:ring-blue-600">
+                                <input v-model="config.announce_on_startup_enabled" @change="onAnnounceOnStartupEnabledChange" type="checkbox" class="w-4 h-4 border border-gray-300 dark:border-zinc-600 rounded bg-gray-50 dark:bg-zinc-700 focus:ring-3 focus:ring-blue-300 dark:focus:ring-blue-600">
                             </div>
-                            <label class="ml-2 text-sm font-medium text-gray-900 dark:text-gray-100">Retry the Link Request button</label>
+                            <label class="ml-2 text-sm font-medium text-gray-900 dark:text-gray-100">Announce at startup</label>
                         </div>
                         <div class="text-sm text-gray-700 dark:text-gray-300">
-                            A link request that goes unanswered is what makes the transport nodes
-                            along the way search for the peer, so the route it finds arrives
-                            seconds after the attempt that failed. With this on, the button waits
-                            for that and tries once more instead of reporting the state of the
-                            network from before you pressed it.
-                        </div>
-                    </div>
-
-                    <div class="p-2">
-                        <div class="flex items-start">
-                            <div class="flex items-center h-5">
-                                <input v-model="config.path_request_on_send_failure_enabled" @change="onPathRequestOnSendFailureEnabledChange" type="checkbox" class="w-4 h-4 border border-gray-300 dark:border-zinc-600 rounded bg-gray-50 dark:bg-zinc-700 focus:ring-3 focus:ring-blue-300 dark:focus:ring-blue-600">
-                            </div>
-                            <label class="ml-2 text-sm font-medium text-gray-900 dark:text-gray-100">Path request on send failure</label>
-                        </div>
-                        <div class="text-sm text-gray-700 dark:text-gray-300">
-                            When a message fails to send, ask the network for a route to that peer
-                            and retry on it. Reticulum only learns a new route when something asks or
-                            the peer announces, so without this a message that failed on a stale path
-                            waits for the peer's next announce. Tried before the propagation node
-                            above, because direct delivery is better when it is reachable; if no route
-                            comes back, the message falls through to propagation as usual. Limited to
-                            3 attempts per peer, at most one a minute.
-                        </div>
-                    </div>
-
-                    <div class="p-2">
-                        <div class="flex items-start">
-                            <div class="flex items-center h-5">
-                                <input v-model="config.path_warm_on_startup_enabled" @change="onPathWarmOnStartupEnabledChange" type="checkbox" class="w-4 h-4 border border-gray-300 dark:border-zinc-600 rounded bg-gray-50 dark:bg-zinc-700 focus:ring-3 focus:ring-blue-300 dark:focus:ring-blue-600">
-                            </div>
-                            <label class="ml-2 text-sm font-medium text-gray-900 dark:text-gray-100">Request paths on startup</label>
-                        </div>
-                        <div class="text-sm text-gray-700 dark:text-gray-300">
-                            Off by default. The saved path table is loaded at startup, which covers
-                            every peer whose cached announce survived, so this only adds anything for
-                            the few it could not restore — and on a LoRa link that is a burst of
-                            requests for very little. Turn it on if you want the backstop: it asks for
-                            a route to the peers you have spoken to recently, skips any already
-                            reachable, and sends at most 20 requests spaced three seconds apart.
-                        </div>
-                    </div>
-
-                    <div class="p-2">
-                        <div class="flex items-start">
-                            <div class="flex items-center h-5">
-                                <input v-model="config.persist_paths_on_discovery_enabled" @change="onPersistPathsOnDiscoveryEnabledChange" type="checkbox" class="w-4 h-4 border border-gray-300 dark:border-zinc-600 rounded bg-gray-50 dark:bg-zinc-700 focus:ring-3 focus:ring-blue-300 dark:focus:ring-blue-600">
-                            </div>
-                            <label class="ml-2 text-sm font-medium text-gray-900 dark:text-gray-100">Save paths as they are learned</label>
-                        </div>
-                        <div class="text-sm text-gray-700 dark:text-gray-300">
-                            Reticulum writes its path table on a clean shutdown and otherwise only every
-                            12 hours, so a hard kill can lose a lot of learned routes. This writes it
-                            shortly after new paths appear, at most once every five minutes.
+                            Announce once, about fifteen seconds after launch. Restoring the saved
+                            paths gives this node a route out, but the route back lives in the
+                            path tables of the transport nodes in between and of the peer itself,
+                            and nothing here can repair those — a path request is answered by the
+                            first node holding any entry and never crosses a hop. An announce is
+                            the only packet every transport node rebroadcasts, so one of them
+                            fixes the route to you the whole way along. Without this, the
+                            auto-announce timer carries on from before the restart and you can be
+                            unreachable until it next comes round.
                         </div>
                     </div>
 
@@ -284,14 +217,15 @@
                             <label class="ml-2 text-sm font-medium text-gray-900 dark:text-gray-100">Switch to a better node while running</label>
                         </div>
                         <div class="text-sm text-gray-700 dark:text-gray-300">
-                            Relays go down and routes shift, so the best node at startup is not
-                            always the best one an hour later. With this on, a node that is
-                            closer than the one in use takes over, as does any node still
-                            announcing when the one in use has gone quiet for three hours or
-                            been switched off by its operator. Equal distance is not enough to
-                            cause a switch: two nodes the same number of hops away would
-                            otherwise trade the slot back and forth, and each handover cancels
-                            whatever sync is in flight.
+                            Off by default, which matches Liberty Chat: pick a node once, then
+                            leave it alone. With this on, a node that is visibly closer than the
+                            one in use takes over — and nothing else does. A handover cancels
+                            whatever sync is in flight and resets the sync clock, and a hop count
+                            read from the path table only says a route exists, not that it works,
+                            so anything short of a clear improvement is not worth acting on. A
+                            node missing from the announce list is left alone too: that can be a
+                            hash you typed in, a pruned announce, or your own local node before
+                            it has announced, none of which mean it is broken.
                         </div>
                     </div>
 
@@ -397,9 +331,6 @@ export default {
                 auto_send_failed_messages_to_propagation_node: null,
                 show_suggested_community_interfaces: null,
                 message_alert_enabled: null,
-                path_request_on_send_failure_enabled: null,
-                path_warm_on_startup_enabled: null,
-                persist_paths_on_discovery_enabled: null,
                 autointerface_recovery_enabled: null,
                 lxmf_local_propagation_node_enabled: null,
                 lxmf_preferred_propagation_node_destination_hash: null,
@@ -407,8 +338,7 @@ export default {
                 auto_select_propagation_node_switching_enabled: null,
                 lxmf_preferred_propagation_node_name: null,
                 lxmf_preferred_propagation_node_hops: null,
-                opportunistic_escalation_seconds: null,
-                link_request_retry_enabled: null,
+                announce_on_startup_enabled: null,
             },
             isResettingIdentity: false,
         };
@@ -480,29 +410,9 @@ export default {
                 "autointerface_recovery_enabled": this.config.autointerface_recovery_enabled,
             });
         },
-        async onPathWarmOnStartupEnabledChange() {
+        async onAnnounceOnStartupEnabledChange() {
             await this.updateConfig({
-                "path_warm_on_startup_enabled": this.config.path_warm_on_startup_enabled,
-            });
-        },
-        async onPersistPathsOnDiscoveryEnabledChange() {
-            await this.updateConfig({
-                "persist_paths_on_discovery_enabled": this.config.persist_paths_on_discovery_enabled,
-            });
-        },
-        async onPathRequestOnSendFailureEnabledChange() {
-            await this.updateConfig({
-                "path_request_on_send_failure_enabled": this.config.path_request_on_send_failure_enabled,
-            });
-        },
-        async onOpportunisticEscalationSecondsChange() {
-            await this.updateConfig({
-                "opportunistic_escalation_seconds": this.config.opportunistic_escalation_seconds,
-            });
-        },
-        async onLinkRequestRetryEnabledChange() {
-            await this.updateConfig({
-                "link_request_retry_enabled": this.config.link_request_retry_enabled,
+                "announce_on_startup_enabled": this.config.announce_on_startup_enabled,
             });
         },
         async onAutoSelectPropagationNodeSwitchingEnabledChange() {

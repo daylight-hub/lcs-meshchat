@@ -1,39 +1,44 @@
 #!/usr/bin/env python3
 """
-Tests how long a send is allowed to go nowhere before the ladder moves on.
+Tests what makes a peer able to reach us, and when the delivery ladder moves.
 
     python3 tools/tests/test_delivery_pacing.py
 
-Two timings are pinned here, both about the same thing: the useful step was
-queued behind the useless one.
+The restart problem. Restoring the saved path table gives this node a route
+out and nothing more. The route back lives in the path tables of the transport
+nodes in between and of the peer itself, and a message only completes if those
+hold a live route -- a delivery proof has to come home. Nothing local repairs
+them, and a path request cannot either: the first node holding any entry
+answers it from its own packet cache and stops it, so it never crosses a hop.
 
-Sending. A message goes out opportunistically first, as a single packet, which
-is right when the route is good. When it is not, LXMF's opportunistic branch
-repeats that packet up to MAX_DELIVERY_ATTEMPTS (5) at DELIVERY_RETRY_WAIT
-(10s) apart, with one drop-and-rediscover and a PATH_REQUEST_WAIT (7s) pause
-folded in, all paced by a PROCESSING_INTERVAL (4s) job loop -- about a minute
-before fail_message fires. fail_message is what starts the link attempt, and
-the link attempt is the only step in the whole ladder that makes a transport
-node go and ask the rest of the network. So the thing that could fix it waits
-behind five repeats of the thing that cannot.
+An announce is the only packet we emit that every transport node rebroadcasts
+rather than consumes, and it carries a fresh emission timestamp, so it is
+accepted over whatever stale entry each hop was holding. That makes it the only
+thing that repairs the inbound half.
 
-The Link Request button. The same inversion in miniature. A link request that
-goes unanswered is what provokes the search, so the route it finds lands
-seconds after the attempt that failed. Reporting failure at that moment
-describes the network as it was before the button was pressed.
+`last_announced_at` persists across a restart, so the auto-announce timer
+carried on from before the restart and MeshChat could stay silent for the
+remainder of the interval -- up to three hours on the old default -- while
+every send failed waiting for a proof with no route home. Hence the startup
+announce, and the shorter interval.
+
+The ladder itself stays where it was in v2.0.7: the escalation to a link runs
+from LXMF's failed callback, after LXMF's own opportunistic retries are spent.
+v2.0.8 tried to cut those retries short with a watchdog that pulled messages
+out of `pending_outbound` early, and that made sending worse rather than
+faster. Liberty Chat does not do it either. The checks below pin the watchdog
+out.
 """
 
 import ast
 import pathlib
 import sys
-import threading
-import time
-import types
 
 ROOT = pathlib.Path(__file__).resolve().parents[2]
 SOURCE = ROOT / "meshchat.py"
 
-tree = ast.parse(SOURCE.read_text(encoding="utf-8"))
+source_text = SOURCE.read_text(encoding="utf-8")
+tree = ast.parse(source_text)
 klass = next((n for n in ast.walk(tree)
               if isinstance(n, ast.ClassDef) and n.name == "ReticulumMeshChat"), None)
 if klass is None:
@@ -41,6 +46,48 @@ if klass is None:
 
 funcs = {n.name: n for n in klass.body
          if isinstance(n, (ast.FunctionDef, ast.AsyncFunctionDef))}
+
+ARITHMETIC = (ast.Add, ast.Sub, ast.Mult, ast.FloorDiv, ast.Div, ast.Pow, ast.USub)
+
+
+def const_value(node):
+    """A constant's value, including one written as arithmetic."""
+    if isinstance(node, ast.BinOp) and isinstance(node.op, ARITHMETIC):
+        if const_value(node.left) is None or const_value(node.right) is None:
+            return None
+        return eval(compile(ast.Expression(node), "<const>", "eval"),  # noqa: S307
+                    {"__builtins__": {}}, {})
+    if isinstance(node, ast.UnaryOp) and isinstance(node.op, ARITHMETIC):
+        return const_value(node.operand)
+    try:
+        return ast.literal_eval(node)
+    except Exception:
+        return None
+
+
+consts = {}
+for node in klass.body:
+    if isinstance(node, ast.Assign):
+        for target in node.targets:
+            if isinstance(target, ast.Name):
+                value = const_value(node.value)
+                if value is not None:
+                    consts[target.id] = value
+
+# config defaults live on their own class
+config_class = next((n for n in ast.walk(tree)
+                     if isinstance(n, ast.ClassDef) and n.name == "Config"), None)
+defaults = {}
+if config_class is not None:
+    for node in config_class.body:
+        if not isinstance(node, ast.Assign) or not isinstance(node.value, ast.Call):
+            continue
+        for target in node.targets:
+            if not isinstance(target, ast.Name):
+                continue
+            args = [const_value(a) for a in node.value.args]
+            if len(args) >= 2:
+                defaults[target.id] = args[1]
 
 ok, fail = [], []
 
@@ -54,186 +101,81 @@ def body_of(name):
     return ast.unparse(funcs[name]) if name in funcs else ""
 
 
-def lift(name, namespace):
-    if name not in funcs:
-        raise SystemExit(name + " not found in meshchat.py")
-    mod = ast.Module(body=[funcs[name]], type_ignores=[])
-    ast.fix_missing_locations(mod)
-    exec(compile(mod, "<meshchat>", "exec"), namespace)  # noqa: S102
-    return namespace[name]
+# --- the startup announce ----------------------------------------------------
+
+check("method present: startup_announce", "startup_announce" in funcs)
+
+_startup = body_of("startup_announce")
+check("it waits before announcing, so the interfaces are up first",
+      "STARTUP_ANNOUNCE_DELAY_SECONDS" in _startup)
+check("the wait is long enough for AutoInterface to have found its peers",
+      consts.get("STARTUP_ANNOUNCE_DELAY_SECONDS", 0) >= 10)
+check("it respects auto-announce being turned off entirely",
+      "auto_announce_enabled" in _startup)
+check("it has its own toggle", "announce_on_startup_enabled" in _startup)
+check("a restart moments after the last announce does not announce again",
+      "STARTUP_ANNOUNCE_FLOOR_SECONDS" in _startup)
+check("and that floor is long enough to cover a few restarts in a row",
+      consts.get("STARTUP_ANNOUNCE_FLOOR_SECONDS", 0) >= 120)
+check("a failing announce is reported rather than raised into the loop thread",
+      "except Exception" in _startup)
+check("it does not block the thread with a sleep",
+      "time.sleep" not in _startup and "await asyncio.sleep" in _startup)
+
+_loop = body_of("announce_loop")
+check("the announce loop runs it before entering its wait",
+      _loop.index("startup_announce") < _loop.index("while True"))
+
+check("announcing at startup is on by default",
+      defaults.get("announce_on_startup_enabled") is True)
+
+# The interval is the worst case for how long a peer can be unable to reach us
+# across a transport node whose entry has gone stale, and on an RF leg the
+# announce is the only repair there is. Liberty Chat moved to an hour for the
+# same reason.
+check("the auto-announce interval is an hour or less by default",
+      defaults.get("auto_announce_interval_seconds", 99999) <= 3600)
 
 
-# the LXMessage state and method constants, by value, so the lifted code
-# compares against the same things it will at runtime
-class FakeLXMessage:
-    OPPORTUNISTIC = 0x01
-    DIRECT = 0x02
-    PROPAGATED = 0x03
-    GENERATING = 0x00
-    OUTBOUND = 0x01
-    SENDING = 0x02
-    SENT = 0x04
-    DELIVERED = 0x08
-    REJECTED = 0xFD
-    CANCELLED = 0xFE
-    FAILED = 0xFF
-
-
-FakeLXMF = types.SimpleNamespace(LXMessage=FakeLXMessage)
-
-
-class FakeConfigValue:
-    def __init__(self, value):
-        self.value = value
-
-    def get(self):
-        return self.value
-
-
-class FakeMessage:
-    def __init__(self, method=FakeLXMessage.OPPORTUNISTIC, state=FakeLXMessage.OUTBOUND):
-        self.desired_method = method
-        self.state = state
-        self.destination_hash = b"\x11" * 16
-
-
-class Harness:
-    """Enough of the app for the escalation watchdog to run, with the
-    deadline set to a fraction of a second so the test does not wait."""
-
-    def __init__(self, *, deadline=0.2, enabled=True, queued=True,
-                 message=None):
-        self.message = message if message is not None else FakeMessage()
-        self.escalated = []
-        self.config = types.SimpleNamespace(
-            opportunistic_escalation_seconds=FakeConfigValue(deadline),
-            direct_link_on_send_failure_enabled=FakeConfigValue(enabled),
-        )
-        self.message_router = types.SimpleNamespace(
-            pending_outbound=[self.message] if queued else [],
-            outbound_processing_lock=threading.Lock(),
-        )
-        self.OPPORTUNISTIC_ESCALATION_POLL_SECONDS = 0.02
-
-    def send_failed_message_over_direct_link(self, lxmf_message):
-        self.escalated.append(lxmf_message)
-
-
-arm_ns = {
-    "LXMF": FakeLXMF,
-    "time": time,
-    "threading": threading,
-    "print": lambda *a, **k: None,
-}
-arm = lift("arm_opportunistic_escalation", arm_ns)
-
-
-def run(h, wait=0.6):
-    arm(h, h.message)
-    time.sleep(wait)
-
-
-# --- the deadline ------------------------------------------------------------
-
-h = Harness()
-run(h)
-check("a send that has gone nowhere by the deadline is escalated",
-      len(h.escalated) == 1)
-check("and is taken out of the outbound queue, so LXMF does not send it twice",
-      h.message not in h.message_router.pending_outbound)
-
-h = Harness()
-arm(h, h.message)
-h.message.state = FakeLXMessage.DELIVERED
-time.sleep(0.6)
-check("a send that lands before the deadline is left alone", h.escalated == [])
-check("and stays in the queue for LXMF to retire normally",
-      h.message in h.message_router.pending_outbound)
-
-h = Harness()
-arm(h, h.message)
-h.message.state = FakeLXMessage.FAILED
-time.sleep(0.6)
-check("a send LXMF already failed is left to the failure callback",
-      h.escalated == [])
-
-h = Harness()
-arm(h, h.message)
-h.message.state = FakeLXMessage.CANCELLED
-time.sleep(0.6)
-check("a cancelled send is not revived", h.escalated == [])
-
-# SENT is not a finish line for an opportunistic message: the packet is out,
-# but LXMF keeps it queued and keeps retrying until a proof comes back, so
-# treating it as settled would disarm the watchdog on every single send
-h = Harness()
-arm(h, h.message)
-h.message.state = FakeLXMessage.SENT
-time.sleep(0.6)
-check("a sent-but-unproven opportunistic packet is still escalated",
-      len(h.escalated) == 1)
-
-# --- what must not be escalated ---------------------------------------------
+# --- the ladder stays on the failed callback ---------------------------------
 
 print()
 
-h = Harness(message=FakeMessage(method=FakeLXMessage.DIRECT))
-run(h)
-check("a direct send is not escalated, since it is already on that rung",
-      h.escalated == [])
+check("the early-escalation watchdog is gone",
+      "arm_opportunistic_escalation" not in source_text)
+check("and so is its deadline setting",
+      "opportunistic_escalation_seconds" not in source_text)
+# Pulling a message out of pending_outbound from outside LXMF races the state
+# machine that owns it. Nothing in here should be doing that.
+check("nothing removes a message from LXMF's outbound queue behind its back",
+      "pending_outbound.remove" not in source_text)
 
-h = Harness(message=FakeMessage(method=FakeLXMessage.PROPAGATED))
-run(h)
-check("a propagated send is not escalated to a link to the recipient",
-      h.escalated == [])
-
-h = Harness(enabled=False)
-run(h)
-check("nothing happens when the link rung is turned off", h.escalated == [])
-
-h = Harness(deadline=0)
-run(h, wait=0.3)
-check("a deadline of zero leaves LXMF's own ladder alone", h.escalated == [])
-
-h = Harness(queued=False)
-run(h)
-check("a message no longer in the queue is not escalated out from under LXMF",
-      h.escalated == [])
-
-# the method can be changed by a failure that beats the deadline
-h = Harness()
-arm(h, h.message)
-h.message.desired_method = FakeLXMessage.DIRECT
-time.sleep(0.6)
-check("a send already moved to a link by a failure is not moved again",
-      h.escalated == [])
-
-
-# --- wiring ------------------------------------------------------------------
-
-print()
-
-_arm = body_of("arm_opportunistic_escalation")
-check("the queue is only touched under the router's own outbound lock",
-      "outbound_processing_lock" in _arm)
-check("the deadline is configurable rather than baked in",
-      "opportunistic_escalation_seconds" in _arm)
-check("the watchdog runs on its own thread, not the event loop",
-      "threading.Thread" in _arm and "daemon=True" in _arm)
-
-_send = body_of("send_message")
-check("a new send arms the deadline", "arm_opportunistic_escalation" in _send)
-
-_submit = body_of("submit_outbound")
-check("a resubmitted send arms it too, so a retry is paced the same way",
-      "arm_opportunistic_escalation" in _submit)
+_failed = body_of("on_lxmf_sending_failed")
+check("the escalation to a link still runs from the failure callback",
+      "send_failed_message_over_direct_link" in _failed)
+check("only an opportunistic send escalates, since a link already failed otherwise",
+      "LXMF.LXMessage.OPPORTUNISTIC" in _failed)
+# Liberty Chat checks both fields: desired_method is what was asked for, method
+# is what LXMF used, and either being opportunistic means no transport node has
+# a link table entry for this message.
+check("both method fields are checked, matching Liberty Chat",
+      "sent_opportunistically" in _failed
+      and "getattr(lxmf_message, 'method', None)" in _failed
+      and "getattr(lxmf_message, 'desired_method', None)" in _failed)
+check("the link attempt comes before the path request, which cannot cross a hop",
+      _failed.index("send_failed_message_over_direct_link")
+      < _failed.index("queue_failed_message_for_path_request"))
 
 _escalate = body_of("send_failed_message_over_direct_link")
 check("escalating switches to a link, which is the rung that provokes a search",
       "LXMF.LXMessage.DIRECT" in _escalate)
-check("and leaves propagation armed, so this shortens a wait rather than "
-      "removing a fallback",
+check("and resets the send state so the attempt actually happens",
+      "packed = None" in _escalate and "delivery_attempts = 0" in _escalate)
+check("propagation stays armed, so this inserts a rung rather than replacing one",
       "try_propagation_on_fail" not in _escalate)
+check("it is resubmitted off-thread, since this runs inside LXMF's own lock",
+      "submit_outbound(lxmf_message)" in _escalate
+      and "handle_outbound" not in _escalate)
 
 
 # --- the link request button -------------------------------------------------
@@ -247,7 +189,8 @@ check("a failed link is followed by a second attempt",
       "link_retried = True" in _endpoint)
 check("which waits for the search the first failure provoked",
       "wait_for_route_change" in _endpoint)
-check("the retry can be turned off", "link_request_retry_enabled" in _endpoint)
+check("the retry is unconditional, not a setting",
+      "link_request_retry_enabled" not in source_text)
 check("the announce is still the last resort, after both attempts",
       _endpoint.index("link_retried = True")
       < _endpoint.index("announced = await self.announce_for_unreachable_peer"))
