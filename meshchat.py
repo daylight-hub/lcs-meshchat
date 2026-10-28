@@ -173,6 +173,14 @@ class ReticulumMeshChat:
         # init reticulum
         self.reticulum = RNS.Reticulum(reticulum_config_dir)
 
+        # LCS: AutoInterface defaults to gateway mode, on this install and on
+        # every new one. Field result: with Liberty Chat's AutoInterface in
+        # roaming, and with both apps in full, MeshChat could not reach Liberty
+        # Chat at all while Liberty Chat reached MeshChat fine. Gateway on both
+        # sides is what made messages flow. Must run after the constructor,
+        # since that is what writes Reticulum's default config on a first run.
+        self.ensure_autointerface_gateway_mode()
+
         # LCS: load the saved path table ourselves. Must run after the Reticulum
         # constructor, since interfaces are attached while config is applied and
         # each entry's interface is re-resolved by hash.
@@ -236,6 +244,79 @@ class ReticulumMeshChat:
         thread = threading.Thread(target=asyncio.run, args=(self.announce_sync_propagation_nodes(),))
         thread.daemon = True
         thread.start()
+
+    # LCS: put any AutoInterface that has no mode set into gateway mode.
+    #
+    # Reticulum's own default config ships one AutoInterface ("Default
+    # Interface") with no mode, which means full. A mode someone chose is left
+    # alone: only a block with neither `mode` nor `interface_mode` is changed.
+    #
+    # Applied twice over. Written to the config, so it holds from the next
+    # start and shows in the interface editor. And set on the live interface
+    # and every peer it has spawned, because Reticulum reads the mode once at
+    # startup and each AutoInterfacePeer copies it when it is created
+    # (AutoInterface.py:587) -- so the change takes effect now, not at the
+    # next restart.
+    def ensure_autointerface_gateway_mode(self):
+
+        try:
+            interfaces = self.reticulum.config.get("interfaces", {})
+        except Exception as e:
+            print("could not read the interface config: {}".format(e))
+            return
+
+        changed = []
+        for name in list(interfaces.keys()):
+            try:
+                section = interfaces[name]
+                if section.get("type") != "AutoInterface":
+                    continue
+                if "mode" in section or "interface_mode" in section:
+                    continue
+                section["mode"] = "gateway"
+                changed.append(name)
+            except Exception as e:
+                print("could not set gateway mode on {}: {}".format(name, e))
+
+        if len(changed) == 0:
+            return
+
+        # Reticulum adds name, selected_interface_mode and configured_bitrate
+        # to every section while it loads (Reticulum.py 1106-1108). They are
+        # recomputed on each start, so writing them back only clutters the
+        # file -- and the saved selected_interface_mode would still say full.
+        # Held aside for the write and put back, since the running stack
+        # keeps using them.
+        runtime_keys = ("name", "selected_interface_mode", "configured_bitrate")
+        held = {}
+        try:
+            for name in list(interfaces.keys()):
+                section = interfaces[name]
+                held[name] = {k: section.pop(k) for k in runtime_keys if k in section}
+            self.reticulum.config.write()
+        except Exception as e:
+            print("could not save gateway mode for {}: {}".format(", ".join(changed), e))
+        finally:
+            for name, values in held.items():
+                try:
+                    interfaces[name].update(values)
+                except Exception:
+                    pass
+
+        gateway = RNS.Interfaces.Interface.Interface.MODE_GATEWAY
+        try:
+            for interface in list(RNS.Transport.interfaces):
+                owner = getattr(interface, "parent_interface", None) or interface
+                if type(owner).__name__ != "AutoInterface":
+                    continue
+                if getattr(owner, "name", None) not in changed:
+                    continue
+                interface.mode = gateway
+                owner.mode = gateway
+        except Exception as e:
+            print("could not apply gateway mode to the running interface: {}".format(e))
+
+        print("Set AutoInterface to gateway mode: {}".format(", ".join(changed)))
 
     # adds the LCS preset interfaces (public TCP backbone + RNode LoRa template) to the
     # reticulum config using the config object. append-only and idempotent: an interface is
@@ -570,9 +651,6 @@ class ReticulumMeshChat:
     async def startup_announce(self):
 
         await asyncio.sleep(self.STARTUP_ANNOUNCE_DELAY_SECONDS)
-
-        if not self.config.announce_on_startup_enabled.get():
-            return
 
         if not self.config.auto_announce_enabled.get():
             return
@@ -3461,8 +3539,6 @@ class ReticulumMeshChat:
             value = bool(data["auto_select_propagation_node_switching_enabled"])
             self.config.auto_select_propagation_node_switching_enabled.set(value)
 
-        if "announce_on_startup_enabled" in data:
-            self.config.announce_on_startup_enabled.set(bool(data["announce_on_startup_enabled"]))
 
 
         # update auto sync interval
@@ -3763,7 +3839,6 @@ class ReticulumMeshChat:
             # settings page can show which relay is in use rather than a hash
             "lxmf_preferred_propagation_node_name": self.preferred_propagation_node_name(),
             "lxmf_preferred_propagation_node_hops": self.preferred_propagation_node_hops(),
-            "announce_on_startup_enabled": self.config.announce_on_startup_enabled.get(),
             "lxmf_preferred_propagation_node_auto_sync_interval_seconds": self.config.lxmf_preferred_propagation_node_auto_sync_interval_seconds.get(),
             "lxmf_preferred_propagation_node_last_synced_at": self.config.lxmf_preferred_propagation_node_last_synced_at.get(),
             "lxmf_user_icon_name": self.config.lxmf_user_icon_name.get(),
@@ -6714,24 +6789,6 @@ class Config:
     # behalf, so on a multi-hop mesh it is what gets a radio to transmit.
     direct_link_on_send_failure_enabled = BoolConfig("direct_link_on_send_failure_enabled", True)
 
-    # LCS: announce once at startup.
-    #
-    # The saved path table is our own. Restoring it gives this node a route
-    # out; it does nothing for the route back, which lives in the path tables
-    # of the Command Center, the far side's Command Center and the peer. A
-    # message only lands if those hold a live route, and a delivery proof only
-    # returns if the route to us is live at every hop.
-    #
-    # Nothing local repairs those, and a path request cannot either -- the
-    # first node holding any entry answers it from cache and stops it. An
-    # announce is the only packet that every transport node rebroadcasts, and
-    # it carries a fresh emission timestamp, so it is accepted over whatever
-    # stale entry each hop held.
-    #
-    # Without this, last_announced_at persisting across a restart left MeshChat
-    # silent for the remainder of the auto-announce interval, during which the
-    # far side had no way to reach it.
-    announce_on_startup_enabled = BoolConfig("announce_on_startup_enabled", True)
 
     # LCS: keep watching for a better propagation node instead of adopting the
     # first one heard and never looking again.

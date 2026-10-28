@@ -1220,6 +1220,14 @@ export default {
         newInterfaceCodingRate: "updateRNodeCalculations",
         newInterfaceTxpower: "updateRNodeCalculations",
         'RNodeInterfaceLoRaParameters.antennaGain': "updateRNodeCalculations",
+        // LCS: a new AutoInterface starts in gateway mode. Only a new one, and
+        // only while no mode has been picked, so editing an existing interface
+        // shows the mode it really has.
+        newInterfaceType(type) {
+            if(type === "AutoInterface" && !this.isEditingInterface && !this.sharedInterfaceSettings.mode){
+                this.sharedInterfaceSettings.mode = "gateway";
+            }
+        },
     },
     mounted() {
 

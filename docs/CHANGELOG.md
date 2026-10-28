@@ -119,7 +119,24 @@ actually used — which is what Liberty Chat does. Either being opportunistic
 means the message went out as a single packet, and so no transport node along
 the way holds a link table entry for it.
 
-361 checks across eight suites.
+**AutoInterface now defaults to gateway mode.** This is the change that
+actually got messages flowing from MeshChat to Liberty Chat. With Liberty
+Chat's AutoInterface in roaming mode — and separately with both apps in full —
+MeshChat could not reach Liberty Chat at all, while Liberty Chat reached
+MeshChat without trouble. `recursive_prs = yes` on the Command Center did not
+help. Gateway on both sides did.
+
+Reticulum's own default config ships its AutoInterface with no mode, which
+means full. MeshChat now fills that in at startup: any AutoInterface block with
+neither `mode` nor `interface_mode` is set to `gateway`, saved to the config,
+and applied to the running interface and every peer it has spawned, so it takes
+effect immediately rather than at the next restart. A mode you have chosen is
+never changed. New AutoInterfaces created in the interface editor also start in
+gateway mode.
+
+**Announce at startup is always on and no longer a setting.**
+
+376 checks across nine suites.
 
 ### What's new in v2.0.7
 

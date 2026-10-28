@@ -112,7 +112,8 @@ check("the wait is long enough for AutoInterface to have found its peers",
       consts.get("STARTUP_ANNOUNCE_DELAY_SECONDS", 0) >= 10)
 check("it respects auto-announce being turned off entirely",
       "auto_announce_enabled" in _startup)
-check("it has its own toggle", "announce_on_startup_enabled" in _startup)
+check("it is always on, not a setting",
+      "announce_on_startup_enabled" not in source_text)
 check("a restart moments after the last announce does not announce again",
       "STARTUP_ANNOUNCE_FLOOR_SECONDS" in _startup)
 check("and that floor is long enough to cover a few restarts in a row",
@@ -126,8 +127,6 @@ _loop = body_of("announce_loop")
 check("the announce loop runs it before entering its wait",
       _loop.index("startup_announce") < _loop.index("while True"))
 
-check("announcing at startup is on by default",
-      defaults.get("announce_on_startup_enabled") is True)
 
 # The interval is the worst case for how long a peer can be unable to reach us
 # across a transport node whose entry has gone stale, and on an RF leg the

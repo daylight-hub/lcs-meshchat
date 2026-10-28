@@ -113,27 +113,6 @@
                         <div class="text-sm text-gray-700 dark:text-gray-300">When enabled, messages that fail to send will be sent to the configured propagation node.</div>
                     </div>
 
-                    <!-- LCS: the half of the round trip nothing local can repair -->
-                    <div class="p-2">
-                        <div class="flex items-start">
-                            <div class="flex items-center h-5">
-                                <input v-model="config.announce_on_startup_enabled" @change="onAnnounceOnStartupEnabledChange" type="checkbox" class="w-4 h-4 border border-gray-300 dark:border-zinc-600 rounded bg-gray-50 dark:bg-zinc-700 focus:ring-3 focus:ring-blue-300 dark:focus:ring-blue-600">
-                            </div>
-                            <label class="ml-2 text-sm font-medium text-gray-900 dark:text-gray-100">Announce at startup</label>
-                        </div>
-                        <div class="text-sm text-gray-700 dark:text-gray-300">
-                            Announce once, about fifteen seconds after launch. Restoring the saved
-                            paths gives this node a route out, but the route back lives in the
-                            path tables of the transport nodes in between and of the peer itself,
-                            and nothing here can repair those — a path request is answered by the
-                            first node holding any entry and never crosses a hop. An announce is
-                            the only packet every transport node rebroadcasts, so one of them
-                            fixes the route to you the whole way along. Without this, the
-                            auto-announce timer carries on from before the restart and you can be
-                            unreachable until it next comes round.
-                        </div>
-                    </div>
-
                     <div class="p-2">
                         <div class="flex items-start">
                             <div class="flex items-center h-5">
@@ -338,7 +317,6 @@ export default {
                 auto_select_propagation_node_switching_enabled: null,
                 lxmf_preferred_propagation_node_name: null,
                 lxmf_preferred_propagation_node_hops: null,
-                announce_on_startup_enabled: null,
             },
             isResettingIdentity: false,
         };
@@ -408,11 +386,6 @@ export default {
         async onAutointerfaceRecoveryEnabledChange() {
             await this.updateConfig({
                 "autointerface_recovery_enabled": this.config.autointerface_recovery_enabled,
-            });
-        },
-        async onAnnounceOnStartupEnabledChange() {
-            await this.updateConfig({
-                "announce_on_startup_enabled": this.config.announce_on_startup_enabled,
             });
         },
         async onAutoSelectPropagationNodeSwitchingEnabledChange() {
