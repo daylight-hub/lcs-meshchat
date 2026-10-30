@@ -23,6 +23,8 @@ setup(
                 # https://github.com/marcelotduarte/cx_Freeze/discussions/2039
                 # https://github.com/marcelotduarte/cx_Freeze/issues/2041
                 'RNS',
+                # trusted roots for LCS Global's HTTPS calls (see src/backend/lcs_global.py)
+                'certifi',
             ],
             # files that are required
             'include_files': [

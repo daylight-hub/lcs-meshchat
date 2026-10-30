@@ -1,6 +1,9 @@
 <template>
     <div :class="{'dark': config?.theme === 'dark'}" class="h-screen w-full flex flex-col">
 
+        <!-- LCS Global: start-up popup, offers and renewal reminders -->
+        <LcsGlobalModal/>
+
         <!-- LCS: Add Interfaces dialog -->
         <div v-if="showLcsDialog" class="fixed inset-0 z-50 flex items-center justify-center p-4 bg-black/50" @click.self="closeLcsDialog">
             <div class="w-full max-w-md bg-white dark:bg-zinc-900 rounded-xl shadow-2xl overflow-hidden">
@@ -14,14 +17,16 @@
 
                 <div class="p-5 space-y-3">
 
-                    <!-- LCS Gateway -->
-                    <label class="flex items-start gap-3 p-3 rounded-lg border border-gray-200 dark:border-zinc-700 hover:bg-gray-50 dark:hover:bg-zinc-800 cursor-pointer">
-                        <input type="checkbox" v-model="lcsForm.lcs_gateway" class="mt-1" />
-                        <div>
-                            <div class="font-medium text-gray-900 dark:text-zinc-100">LCS Gateway Client</div>
-                            <div class="text-xs text-gray-500 dark:text-zinc-400">public.lcs.network:4243 — connects to the LCS backbone</div>
+                    <!-- LCS Global (replaces the old public gateway) -->
+                    <button @click="openLcsGlobalFromDialog" type="button"
+                            class="w-full flex items-center gap-3 p-3 rounded-xl text-left text-white bg-[radial-gradient(120%_140%_at_0%_0%,#0a4f92_0%,#013E74_50%,#062b52_100%)] ring-1 ring-[#E8C86A]/40 hover:ring-[#E8C86A] shadow-sm transition">
+                        <img src="/assets/images/lcs-global-mark.png" alt="" class="w-10 h-10 shrink-0"/>
+                        <div class="flex-1 min-w-0">
+                            <div class="font-semibold">LCS Global</div>
+                            <div class="text-xs text-blue-100/90">Connect over Wi-Fi, Ethernet or mobile data · Free 7-day trial</div>
                         </div>
-                    </label>
+                        <span class="shrink-0 text-xs font-bold px-2.5 py-1 rounded-lg bg-[#E8C86A] text-[#062b52]">{{ lcsGlobalButton }}</span>
+                    </button>
 
                     <!-- Command Center PRO Client -->
                     <label class="flex items-start gap-3 p-3 rounded-lg border border-gray-200 dark:border-zinc-700 hover:bg-gray-50 dark:hover:bg-zinc-800 cursor-pointer">
@@ -240,6 +245,21 @@
                                 </SidebarLink>
                             </li>
 
+                            <!-- LCS Global -->
+                            <li>
+                                <SidebarLink :to="{ name: 'lcs-global' }">
+                                    <template v-slot:icon>
+                                        <img src="/assets/images/lcs-global-mark.png" alt="" class="w-6 h-6"/>
+                                    </template>
+                                    <template v-slot:text>
+                                        <span class="flex items-center gap-2">LCS Global
+                                            <span v-if="lcsGlobal.state === 'grace' || lcsGlobal.state === 'trial_ended' || lcsGlobal.state === 'expired'"
+                                                  class="w-2 h-2 rounded-full bg-amber-500" title="Needs attention"></span>
+                                        </span>
+                                    </template>
+                                </SidebarLink>
+                            </li>
+
                             <!-- network visualiser -->
                             <li>
                                 <SidebarLink :to="{ name: 'network-visualiser' }">
@@ -334,12 +354,18 @@
                                     >
                                 </div>
                                 <div class="p-1 dark:border-zinc-900">
-                                    <div>Identity Hash</div>
-                                    <div class="text-sm text-gray-700 dark:text-zinc-400">{{ config.identity_hash }}</div>
+                                    <div class="flex items-center">Identity Hash
+                                        <span v-if="copiedField === 'identity'" class="ml-auto text-xs font-semibold text-emerald-600 dark:text-emerald-400">Copied</span>
+                                    </div>
+                                    <button type="button" @click="copyToClipboard(config.identity_hash, 'identity')" title="Click to copy"
+                                            class="block w-full text-left text-sm font-mono break-all text-gray-700 dark:text-zinc-400 rounded hover:bg-gray-100 dark:hover:bg-zinc-800 cursor-copy">{{ config.identity_hash }}</button>
                                 </div>
                                 <div class="p-1 dark:border-zinc-900">
-                                    <div>LXMF Address</div>
-                                    <div class="text-sm text-gray-700 dark:text-zinc-400">{{ config.lxmf_address_hash }}</div>
+                                    <div class="flex items-center">LXMF Address
+                                        <span v-if="copiedField === 'lxmf'" class="ml-auto text-xs font-semibold text-emerald-600 dark:text-emerald-400">Copied</span>
+                                    </div>
+                                    <button type="button" @click="copyToClipboard(config.lxmf_address_hash, 'lxmf')" title="Click to copy"
+                                            class="block w-full text-left text-sm font-mono break-all text-gray-700 dark:text-zinc-400 rounded hover:bg-gray-100 dark:hover:bg-zinc-800 cursor-copy">{{ config.lxmf_address_hash }}</button>
                                 </div>
                             </div>
                         </div>
@@ -499,6 +525,8 @@
 
 <script>
 import SidebarLink from "./SidebarLink.vue";
+import LcsGlobalModal from "./lcsglobal/LcsGlobalModal.vue";
+import LcsGlobal from "../js/LcsGlobal";
 import DialogUtils from "../js/DialogUtils";
 import TelephoneAudioBridge from "../js/TelephoneAudioBridge";
 import WebSocketConnection from "../js/WebSocketConnection";
@@ -514,6 +542,7 @@ export default {
     components: {
         LxmfUserIcon,
         SidebarLink,
+        LcsGlobalModal,
     },
     data() {
         return {
@@ -525,8 +554,9 @@ export default {
             showLcsDialog: false,
             isFindingPort: false,
             lcsSerialPorts: [],
+            lcsGlobal: LcsGlobal,
+            copiedField: null,
             lcsForm: {
-                lcs_gateway: true,
                 // optional, off by default: only useful if you run a Command Center PRO
                 command_center: false,
                 ip_rnode: true,
@@ -556,6 +586,7 @@ export default {
     beforeUnmount() {
 
         clearInterval(this.reloadInterval);
+        window.removeEventListener("focus", this.onWindowFocus);
 
         // stop listening for websocket messages
         WebSocketConnection.off("message", this.onWebsocketMessage);
@@ -569,6 +600,10 @@ export default {
         this.getAppInfo();
         this.getTelephoneStatus();
         this.updatePropagationNodeStatus();
+
+        // LCS Global: the start-up popup (until "Don't show this message again"), else any reminder
+        this.showLcsGlobalAtStart();
+        window.addEventListener("focus", this.onWindowFocus);
 
         // update info every few seconds
         this.reloadInterval = setInterval(() => {
@@ -863,6 +898,52 @@ export default {
                 // ignore error
             }
         },
+        // click an identity hash or LXMF address to copy it
+        async copyToClipboard(text, field) {
+            if (!text) return;
+            try {
+                await navigator.clipboard.writeText(text);
+            } catch (e) {
+                // plain-http web builds have no clipboard API: fall back to a hidden text box
+                const box = document.createElement("textarea");
+                box.value = text;
+                box.style.position = "fixed";
+                box.style.opacity = "0";
+                document.body.appendChild(box);
+                box.select();
+                try { document.execCommand("copy"); } catch (err) { /* nothing more to try */ }
+                document.body.removeChild(box);
+            }
+            this.copiedField = field;
+            clearTimeout(this._copiedTimer);
+            this._copiedTimer = setTimeout(() => { this.copiedField = null; }, 1500);
+        },
+        async showLcsGlobalAtStart() {
+            const lg = this.lcsGlobal;
+            await lg.load({ plans: true });
+            if (!lg.data) return;
+            if (!lg.data.popup_dismissed && !lg.hasAccess) {
+                lg.popup = { mode: "startup" };
+                return;
+            }
+            const reminder = lg.reminder();
+            if (reminder && lg.reminderDue(reminder)) {
+                lg.reminderShown(reminder);
+                lg.popup = { mode: "reminder", reminder };
+            }
+        },
+        onWindowFocus() {
+            // back from paying in the browser: pick up the new plan straight away
+            if (this.lcsGlobal.data?.has_interface || this.lcsGlobal.data?.watching) {
+                this.lcsGlobal.check();
+            }
+        },
+        openLcsGlobalFromDialog() {
+            this.showLcsDialog = false;
+            this.lcsGlobal.notice = null;
+            this.lcsGlobal.load({ refresh: true, plans: true });
+            this.lcsGlobal.popup = { mode: "offer" };
+        },
         addLcsPresets() {
             // open the polished dialog for choosing which interfaces to add
             this.showLcsDialog = true;
@@ -894,7 +975,6 @@ export default {
             }
             // build the selected list from the checkboxes
             const selected = [];
-            if (this.lcsForm.lcs_gateway) selected.push("lcs_gateway");
             if (this.lcsForm.command_center) selected.push("command_center");
             if (this.lcsForm.ip_rnode) selected.push("ip_rnode");
             if (this.lcsForm.rnode_lora) selected.push("rnode_lora");
@@ -1090,6 +1170,9 @@ export default {
         },
     },
     computed: {
+        lcsGlobalButton() {
+            return this.lcsGlobal.hasAccess ? "Open" : "Set up";
+        },
         isWeb() {
             // true in the web/docker build; false in the electron desktop app.
             // the LCS Home/Restart buttons are only shown in the web/docker build.

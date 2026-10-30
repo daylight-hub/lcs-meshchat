@@ -49,13 +49,33 @@ microphone access in a secure context. That setup is in the Docker guide.
 
 ## Features
 
+### LCS Global
+
+- **LCS Global** connects MeshChat to the Liberty network over Wi-Fi, Ethernet or
+  mobile data, with a free 7-day trial and no data limits. A popup introduces it at
+  start-up (until "Don't show this message again" is ticked), and it has its own page
+  in the sidebar, as the first entry under Add Interface, and in Add LCS Interfaces.
+- Payment happens on lcs.network. The checkout link carries a one-time device code,
+  so the plan connects here by itself as soon as payment goes through: no codes.
+- The interface is managed for you: its address, port and monthly passphrase come
+  from LCS after a signed check-in with your identity and update without a restart.
+  It is hidden from the interface list, never exported, and can't be edited by hand.
+- Renewal reminders (trial ending, trial ended, payment due, ended) appear at most
+  once a day each, like Liberty Chat's.
+- Resetting your identity moves the trial or plan to the new identity at the next
+  start (both identities sign the move).
+- Hand-made interfaces can't point at lcs.network or any name under it. The old
+  "LCS Gateway" interface becomes LCS Global, with the free trial, on first start.
+- Community testnet interfaces were removed from Add Interface.
+
 ### Branding and navigation
 
 - Updated to the most recent RNS version 1.5.5, LXMF version 1.1.1, and LXST version 0.5.3.
 - **Add LCS Interfaces** — a header button opens a dialog to add LCS network
   interfaces to Reticulum. Choose which to add, whether to enable them immediately,
   and auto-detect a connected RNode's serial port:
-  - **LCS Gateway Client** — (TCP, gateway mode)
+  - **LCS Global** — the subscription connection to the Liberty network over the
+    internet (free 7-day trial). Set up from its popup or page, never by hand.
   - **Command Center PRO Client** — `liberty.local:4246` (TCP), off by default
   - **IP RNode** — `iprnode.local:4545` (TCP, network-attached RNode)
   - **RNode LoRa** — direct serial LoRa radio (914.875 MHz, 17 dBm), added disabled

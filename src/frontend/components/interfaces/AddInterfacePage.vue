@@ -2,69 +2,22 @@
     <div class="flex flex-col flex-1 overflow-hidden min-w-full sm:min-w-[500px] dark:bg-zinc-950">
         <div class="overflow-y-auto p-2 space-y-2">
 
-            <!-- community interfaces -->
-            <div v-if="!isEditingInterface && config != null && config.show_suggested_community_interfaces" class="bg-white rounded shadow divide-y divide-gray-200 dark:bg-zinc-900">
-                <div class="flex p-2">
-                    <div class="my-auto mr-auto">
-                        <div class="font-bold dark:text-white">Community Interfaces</div>
-                        <div class="text-sm dark:text-gray-100">These TCP interfaces serve as a quick way to test Reticulum. We suggest running your own as these may not always be available.</div>
+            <!-- LCS Global: the internet connection to the Liberty network -->
+            <div v-if="!isEditingInterface && newInterfaceType !== 'LCSGlobal'"
+                 class="relative overflow-hidden rounded-2xl text-white shadow-[0_16px_40px_rgba(1,62,116,0.25)] bg-[radial-gradient(120%_140%_at_0%_0%,#0a4f92_0%,#013E74_45%,#062b52_100%)]">
+                <div class="absolute inset-0 pointer-events-none bg-[radial-gradient(60%_80%_at_100%_0%,rgba(232,200,106,0.18),transparent_60%)]"></div>
+                <div class="relative flex flex-col sm:flex-row sm:items-center gap-4 p-4 sm:p-5">
+                    <img src="/assets/images/lcs-global-logo-on-dark.png" alt="LCS Global" class="h-12 w-auto self-start sm:self-center"/>
+                    <div class="flex-1 text-sm text-blue-100/90">
+                        Reach the Liberty network from anywhere over Wi-Fi, Ethernet or mobile data.
+                        <span class="font-semibold text-[#E8C86A]">Free 7-day trial.</span>
                     </div>
-                    <div class="my-auto ml-2">
-                        <button @click="updateConfig({'show_suggested_community_interfaces': false})" type="button" class="text-gray-700 bg-gray-100 hover:bg-gray-200 p-2 rounded-full dark:bg-zinc-600 dark:text-white dark:hover:bg-zinc-700 dark:focus-visible:outline-zinc-500">
-                            <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 20 20" fill="currentColor" class="w-5 h-5">
-                                <path d="M6.28 5.22a.75.75 0 0 0-1.06 1.06L8.94 10l-3.72 3.72a.75.75 0 1 0 1.06 1.06L10 11.06l3.72 3.72a.75.75 0 1 0 1.06-1.06L11.06 10l3.72-3.72a.75.75 0 0 0-1.06-1.06L10 8.94 6.28 5.22Z"/>
-                            </svg>
-                        </button>
-                    </div>
+                    <button @click="newInterfaceType = 'LCSGlobal'" type="button"
+                            class="shrink-0 px-4 py-2.5 rounded-xl font-bold text-[#062b52] bg-[#E8C86A] hover:bg-[#f0d47f] shadow-sm transition active:scale-[0.98]">
+                        {{ lcsGlobal.hasAccess ? 'Open LCS Global' : 'Set up LCS Global' }}
+                    </button>
                 </div>
-                <div class="divide-y divide-gray-200 dark:text-white">
-
-                    <div class="flex px-2 py-1">
-                        <div class="my-auto mr-auto">
-                            <div>LCS Gateway</div>
-                            <div class="text-xs">public.lcs.network:4243</div>
-                        </div>
-                        <div class="ml-2 my-auto">
-                            <button
-                                @click="newInterfaceName='LCS Gateway';newInterfaceType='TCPClientInterface';newInterfaceTargetHost='public.lcs.network';newInterfaceTargetPort='4243'"
-                                type="button"
-                                class="inline-flex items-center gap-x-1 rounded-md bg-gray-500 px-2 py-1 text-sm font-semibold text-white shadow-sm hover:bg-gray-400 focus-visible:outline focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-gray-500">
-                                <span>Use Interface</span>
-                            </button>
-                        </div>
-                    </div>
-
-                    <div class="flex px-2 py-1">
-                        <div class="my-auto mr-auto">
-                            <div>RNS Testnet Amsterdam</div>
-                            <div class="text-xs">amsterdam.connect.reticulum.network:4965</div>
-                        </div>
-                        <div class="ml-2 my-auto">
-                            <button
-                                @click="newInterfaceName='RNS Testnet Amsterdam';newInterfaceType='TCPClientInterface';newInterfaceTargetHost='amsterdam.connect.reticulum.network';newInterfaceTargetPort='4965'"
-                                type="button"
-                                class="inline-flex items-center gap-x-1 rounded-md bg-gray-500 px-2 py-1 text-sm font-semibold text-white shadow-sm hover:bg-gray-400 focus-visible:outline focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-gray-500">
-                                <span>Use Interface</span>
-                            </button>
-                        </div>
-                    </div>
-
-                    <div class="flex px-2 py-1">
-                        <div class="my-auto mr-auto">
-                            <div>RNS Testnet BetweenTheBorders</div>
-                            <div class="text-xs">reticulum.betweentheborders.com:4242</div>
-                        </div>
-                        <div class="ml-2 my-auto">
-                            <button
-                                @click="newInterfaceName='RNS Testnet BetweenTheBorders';newInterfaceType='TCPClientInterface';newInterfaceTargetHost='reticulum.betweentheborders.com';newInterfaceTargetPort='4242'"
-                                type="button"
-                                class="inline-flex items-center gap-x-1 rounded-md bg-gray-500 px-2 py-1 text-sm font-semibold text-white shadow-sm hover:bg-gray-400 focus-visible:outline focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-gray-500">
-                                <span>Use Interface</span>
-                            </button>
-                        </div>
-                    </div>
-
-                </div>
+                <div class="absolute bottom-0 left-0 right-0 h-[3px] bg-gradient-to-r from-[#1e5aa0] via-[#E8C86A] to-[#062b52]"></div>
             </div>
 
             <!-- add interface form -->
@@ -77,7 +30,7 @@
 
                     <!-- iGeneric interface settings -->
                     <!-- interface name -->
-                    <div>
+                    <div v-if="newInterfaceType !== 'LCSGlobal'">
                         <FormLabel class="mb-1">Name</FormLabel>
                         <input type="text" :disabled="isEditingInterface" placeholder="New Interface Name"
                                v-model="newInterfaceName"
@@ -91,6 +44,7 @@
                         <FormLabel class="mb-1">Type</FormLabel>
                         <select v-model="newInterfaceType" class="bg-gray-50 border border-gray-300 text-gray-900 text-sm rounded-lg focus:ring-blue-500 focus:border-blue-500 block w-full p-2.5 dark:bg-zinc-900 dark:border-zinc-600 dark:text-white">
                             <option disabled selected>--</option>
+                            <option v-if="!isEditingInterface" value="LCSGlobal">LCS Global (internet, subscription)</option>
                             <option value="AutoInterface">Auto Interface</option>
                             <option disabled selected>RNodes</option>
                             <option value="RNodeInterface">RNode Interface</option>
@@ -110,6 +64,17 @@
                         <FormSubLabel>
                             Need help? <button type="button" @click="showInterfaceHelp = true" class="text-blue-500 underline">Choosing an Interface</button>
                         </FormSubLabel>
+                    </div>
+
+                    <!-- LCS Global: set up by the subscription, no fields to fill in -->
+                    <div v-if="newInterfaceType === 'LCSGlobal'" class="space-y-4">
+                        <div class="relative overflow-hidden rounded-2xl text-white px-5 py-4 bg-[radial-gradient(120%_140%_at_0%_0%,#0a4f92_0%,#013E74_45%,#062b52_100%)]">
+                            <img src="/assets/images/lcs-global-logo-on-dark.png" alt="LCS Global" class="h-12 w-auto"/>
+                            <div class="mt-2 text-sm text-blue-100/90">Its address, port and passphrase come from LCS and update by
+                                themselves, so there's nothing to type in. Start the free trial or choose a plan below.</div>
+                            <div class="absolute bottom-0 left-0 right-0 h-[3px] bg-gradient-to-r from-[#1e5aa0] via-[#E8C86A] to-[#062b52]"></div>
+                        </div>
+                        <LcsGlobalPanel @done="$router.push({ name: 'lcs-global' })"/>
                     </div>
 
                     <!-- TCPClientInterface -->
@@ -776,7 +741,7 @@
             </ExpandingSection>
 
             <!-- optional interface settings -->
-            <ExpandingSection>
+            <ExpandingSection v-if="newInterfaceType !== 'LCSGlobal'">
                 <template v-slot:title>Optional Interface Settings</template>
                 <template v-slot:content>
                     <div class="p-2 space-y-3">
@@ -811,7 +776,7 @@
             </ExpandingSection>
 
             <!-- ifac settings -->
-            <ExpandingSection>
+            <ExpandingSection v-if="newInterfaceType !== 'LCSGlobal'">
                 <template v-slot:title>IFAC Settings</template>
                 <template v-slot:content>
                     <div class="p-2">
@@ -852,7 +817,7 @@
             </ExpandingSection>
 
             <!-- add/save interface button -->
-            <div class="p-2 bg-white rounded shadow divide-y divide-gray-200 dark:bg-zinc-900">
+            <div v-if="newInterfaceType !== 'LCSGlobal'" class="p-2 bg-white rounded shadow divide-y divide-gray-200 dark:bg-zinc-900">
                 <button @click="addInterface" type="button" class="bg-green-500 hover:bg-green-400 focus-visible:outline-green-500 my-auto inline-flex items-center gap-x-1 rounded-md p-2 text-sm font-semibold text-white shadow-sm focus-visible:outline focus-visible:outline-2 focus-visible:outline-offset-2 dark:text-white dark:focus:ring-blue-600 dark:focus:border-blue-600">
                     <span v-if="isEditingInterface">Save Interface</span>
                     <span v-else>Add Interface</span>
@@ -877,7 +842,7 @@
                     <p>
                         Interfaces are how MeshChat connects to a Reticulum network — over the internet, your
                         local network, or radio hardware. You can add as many as you like and mix them freely.
-                        If you're not sure, start with <b>LCS Gateway</b> (under preferred servers) or
+                        If you're not sure, start with <b>LCS Global</b> (the free 7-day trial, first in the Type list) or
                         <b>Auto Interface</b>.
                     </p>
 
@@ -979,10 +944,13 @@ import rnodeBoards from "../../js/rnode-boards.json";
 import ExpandingSection from "./ExpandingSection.vue";
 import FormLabel from "../forms/FormLabel.vue";
 import FormSubLabel from "../forms/FormSubLabel.vue";
+import LcsGlobalPanel from "../lcsglobal/LcsGlobalPanel.vue";
+import LcsGlobal from "../../js/LcsGlobal";
 
 export default {
     name: 'AddInterfacePage',
     components: {
+        LcsGlobalPanel,
         FormSubLabel,
         FormLabel,
         ExpandingSection,
@@ -991,6 +959,7 @@ export default {
         return {
 
             isEditingInterface: false,
+            lcsGlobal: LcsGlobal,
 
             config: null,
 
@@ -1063,7 +1032,7 @@ export default {
                 {
                     name: "TCP Client Interface",
                     tagline: "Connect to a server over the internet",
-                    body: "Connects out to a remote Reticulum node you specify by hostname or IP and port. This is how you join the LCS Gateway (public.lcs.network:4243) or public testnets. Reconnects on its own if the link drops. The most common way to get on the wider network.",
+                    body: "Connects out to a remote Reticulum node you specify by hostname or IP and port. This is how you join other people's Reticulum servers. (For the Liberty network over the internet, use LCS Global instead.) Reconnects on its own if the link drops. The most common way to get on the wider network.",
                 },
                 {
                     name: "TCP Server Interface",
@@ -1234,8 +1203,16 @@ export default {
         this.getConfig();
         this.loadComports();
 
+        // LCS Global's details refresh in the background (plans, trial, plan in use)
+        this.lcsGlobal.load({ plans: true });
+
         // check if we are editing an interface
         const interfaceName = this.$route.query.interface_name;
+        // LCS Global has no settings to edit by hand: its page has everything
+        if(interfaceName === "LCS Global"){
+            this.$router.replace({ name: "lcs-global" });
+            return;
+        }
         if(interfaceName != null){
             this.isEditingInterface = true;
             this.loadInterfaceToEdit(interfaceName);

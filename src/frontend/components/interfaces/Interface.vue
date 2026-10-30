@@ -20,7 +20,9 @@
             <!-- icon -->
             <div class="my-auto mx-2">
 
-                <svg v-if="iface.type === 'AutoInterface'" xmlns="http://www.w3.org/2000/svg" fill="currentColor" viewBox="0 0 256 256" class="size-6 dark:text-white">
+                <img v-if="iface.type === 'LCSGlobal'" src="/assets/images/lcs-global-mark.png" alt="" class="size-7"/>
+
+                <svg v-else-if="iface.type === 'AutoInterface'" xmlns="http://www.w3.org/2000/svg" fill="currentColor" viewBox="0 0 256 256" class="size-6 dark:text-white">
                     <path d="M219.31,108.68l-80-80a16,16,0,0,0-22.62,0l-80,80A15.87,15.87,0,0,0,32,120v96a8,8,0,0,0,8,8h64a8,8,0,0,0,8-8V160h32v56a8,8,0,0,0,8,8h64a8,8,0,0,0,8-8V120A15.87,15.87,0,0,0,219.31,108.68ZM208,208H160V152a8,8,0,0,0-8-8H104a8,8,0,0,0-8,8v56H48V120l80-80,80,80Z"></path>
                 </svg>
 
@@ -55,8 +57,13 @@
                 <div class="font-semibold leading-5 dark:text-white">{{ iface._name }}</div>
                 <div class="text-sm flex space-x-1 dark:text-zinc-100">
 
+                    <!-- LCS Global: managed by the subscription -->
+                    <div v-if="iface.type === 'LCSGlobal'">
+                        Internet gateway • <RouterLink :to="{ name: 'lcs-global' }" class="text-[#1e5aa0] dark:text-[#8fb8e8] font-semibold">{{ lcsDescription }}</RouterLink>
+                    </div>
+
                     <!-- auto interface -->
-                    <div v-if="iface.type === 'AutoInterface'">
+                    <div v-else-if="iface.type === 'AutoInterface'">
                         {{ iface.type }} • Ethernet and WiFi
                     </div>
 
@@ -131,8 +138,14 @@
 
                         </div>
 
+                        <!-- LCS Global: its own page instead of Edit and Export (managed by the subscription) -->
+                        <DropDownMenuItem v-if="iface.type === 'LCSGlobal'" @click="$router.push({ name: 'lcs-global' })">
+                            <img src="/assets/images/lcs-global-mark.png" alt="" class="size-5"/>
+                            <span>Open LCS Global</span>
+                        </DropDownMenuItem>
+
                         <!-- edit interface button -->
-                        <DropDownMenuItem @click="editInterface">
+                        <DropDownMenuItem v-if="iface.type !== 'LCSGlobal'" @click="editInterface">
                             <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" fill="currentColor" class="size-5">
                                 <path d="M21.731 2.269a2.625 2.625 0 0 0-3.712 0l-1.157 1.157 3.712 3.712 1.157-1.157a2.625 2.625 0 0 0 0-3.712ZM19.513 8.199l-3.712-3.712-12.15 12.15a5.25 5.25 0 0 0-1.32 2.214l-.8 2.685a.75.75 0 0 0 .933.933l2.685-.8a5.25 5.25 0 0 0 2.214-1.32L19.513 8.2Z" />
                             </svg>
@@ -140,7 +153,7 @@
                         </DropDownMenuItem>
 
                         <!-- export interface button -->
-                        <DropDownMenuItem @click="exportInterface">
+                        <DropDownMenuItem v-if="iface.type !== 'LCSGlobal'" @click="exportInterface">
                             <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" fill="currentColor" class="size-5">
                                 <path fill-rule="evenodd" d="M12 2.25a.75.75 0 0 1 .75.75v11.69l3.22-3.22a.75.75 0 1 1 1.06 1.06l-4.5 4.5a.75.75 0 0 1-1.06 0l-4.5-4.5a.75.75 0 1 1 1.06-1.06l3.22 3.22V3a.75.75 0 0 1 .75-.75Zm-9 13.5a.75.75 0 0 1 .75.75v2.25a1.5 1.5 0 0 0 1.5 1.5h13.5a1.5 1.5 0 0 0 1.5-1.5V16.5a.75.75 0 0 1 1.5 0v2.25a3 3 0 0 1-3 3H5.25a3 3 0 0 1-3-3V16.5a.75.75 0 0 1 .75-.75Z" clip-rule="evenodd" />
                             </svg>
@@ -153,7 +166,7 @@
                                 <svg class="size-5 text-red-500" viewBox="0 0 20 20" fill="currentColor">
                                     <path fill-rule="evenodd" d="M8.75 1A2.75 2.75 0 0 0 6 3.75v.443c-.795.077-1.584.176-2.365.298a.75.75 0 1 0 .23 1.482l.149-.022.841 10.518A2.75 2.75 0 0 0 7.596 19h4.807a2.75 2.75 0 0 0 2.742-2.53l.841-10.52.149.023a.75.75 0 0 0 .23-1.482A41.03 41.03 0 0 0 14 4.193V3.75A2.75 2.75 0 0 0 11.25 1h-2.5ZM10 4c.84 0 1.673.025 2.5.075V3.75c0-.69-.56-1.25-1.25-1.25h-2.5c-.69 0-1.25.56-1.25 1.25v.325C8.327 4.025 9.16 4 10 4ZM8.58 7.72a.75.75 0 0 0-1.5.06l.3 7.5a.75.75 0 1 0 1.5-.06l-.3-7.5Zm4.34.06a.75.75 0 1 0-1.5-.06l-.3 7.5a.75.75 0 1 0 1.5.06l.3-7.5Z" clip-rule="evenodd" />
                                 </svg>
-                                <span class="text-red-500">Delete Interface</span>
+                                <span class="text-red-500">{{ iface.type === 'LCSGlobal' ? 'Remove LCS Global' : 'Delete Interface' }}</span>
                             </DropDownMenuItem>
                         </div>
 
@@ -211,6 +224,7 @@ import Utils from "../../js/Utils";
 import DropDownMenuItem from "../DropDownMenuItem.vue";
 import IconButton from "../IconButton.vue";
 import DropDownMenu from "../DropDownMenu.vue";
+import LcsGlobal from "../../js/LcsGlobal";
 
 export default {
     name: 'Interface',
@@ -224,8 +238,17 @@ export default {
     },
     data() {
         return {
-
+            lcsGlobal: LcsGlobal,
         };
+    },
+    computed: {
+        lcsDescription() {
+            const state = this.lcsGlobal.state;
+            return { trial: "Free trial", active: "Subscription active", grace: "Payment needed", trial_ended: "Trial ended", expired: "Ended", none: "Start free trial" }[state] ?? "Subscription";
+        },
+    },
+    mounted() {
+        if (this.iface?.type === "LCSGlobal" && !this.lcsGlobal.loaded) this.lcsGlobal.load();
     },
     methods: {
         onIFACSignatureClick: function(ifacSignature) {

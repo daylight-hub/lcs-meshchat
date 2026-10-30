@@ -3,6 +3,29 @@
 Version history for LCS MeshChat. The release workflow reads the
 section matching the version being built and uses it as the release body.
 
+### What's new in v2.0.9
+
+**LCS Global comes to LCS MeshChat.** The same subscription connection to the
+Liberty network as in Liberty Chat: over Wi-Fi, Ethernet or mobile data, from
+anywhere, with a free 7-day trial and no data limits.
+
+- A start-up popup introduces it, with the free trial and the plans. Tick "Don't
+  show this message again" to stop it; it never shows while you're subscribed.
+- New **LCS Global** page in the sidebar: where you stand, Manage plan, Check
+  again, plans, codes, and how the encryption works.
+- **Add Interface** now leads with LCS Global (first card and first type) and no
+  longer suggests the community testnets. **Add LCS Interfaces** offers LCS Global
+  in place of the old public gateway.
+- Paying on lcs.network connects this computer by itself within seconds: the
+  checkout link is tied to your identity, so there are no codes to enter.
+- The gateway's address and monthly passphrase are fetched and applied in the
+  background, and the interface is reloaded without restarting MeshChat.
+- Renewal reminders match Liberty Chat's: trial ending, trial ended, payment due,
+  and ended, at most once a day each.
+- Resetting your identity carries the trial or plan over to the new one.
+- The old "LCS Gateway" interface becomes LCS Global on first start. Hand-made
+  interfaces can no longer point at lcs.network or anything under it.
+
 ### What's new in v2.0.8
 
 **MeshChat now announces once at startup, which is the fix for a restart

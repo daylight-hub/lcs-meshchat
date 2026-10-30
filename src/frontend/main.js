@@ -45,6 +45,11 @@ const router = createRouter({
             },
         },
         {
+            name: "lcs-global",
+            path: '/lcs-global',
+            component: defineAsyncComponent(() => import("./components/lcsglobal/LcsGlobalPage.vue")),
+        },
+        {
             name: "messages",
             path: '/messages/:destinationHash?',
             props: true,

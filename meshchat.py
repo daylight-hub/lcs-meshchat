@@ -39,6 +39,7 @@ from src.backend.lxmf_message_fields import LxmfImageField, LxmfFileAttachmentsF
 from src.backend.rns_link_bridge import BridgeConfig, LocalBackend, attach_to_app, run_standalone
 from src.backend.blackhole import BlackholeManager
 from src.backend.sideband_commands import SidebandCommands
+from src.backend.lcs_global import LcsGlobal, INTERFACE_NAME as LCS_GLOBAL_INTERFACE, RESERVED_MESSAGE as LCS_RESERVED_MESSAGE
 
 # hack to avoid below error on windows from soundcard/mediafoundation.py in self._record_chunk()
 # ValueError: The binary mode of fromstring is removed, use frombuffer instead
@@ -187,6 +188,14 @@ class ReticulumMeshChat:
         self.restore_path_table()
 
         self.identity = identity
+
+        # LCS Global: the paid internet connection (see src/backend/lcs_global.py). Turns the old
+        # hand-made LCS gateway into LCS Global and switches off hand-made interfaces aimed at LCS.
+        self.lcs_global = LcsGlobal(self, client_version=self.get_app_version())
+        try:
+            self.lcs_global.prepare_config()
+        except Exception as e:
+            print("LCS Global: could not check the interfaces: {}".format(e))
 
         # init lxmf router
         self.message_router = LXMF.LXMRouter(identity=self.identity, storagepath=lxmf_router_path)
@@ -338,22 +347,8 @@ class ReticulumMeshChat:
 
         enabled_value = "yes" if enable else "no"
 
-        # LCS Gateway Client
-        gateway_name = "LCS Gateway Client: public.lcs.network"
-        if "lcs_gateway" in selected:
-            if gateway_name not in interfaces:
-                interfaces[gateway_name] = {
-                    "type": "TCPClientInterface",
-                    "enabled": enabled_value,
-                    "mode": "gateway",
-                    "target_host": "public.lcs.network",
-                    "target_port": "4243",
-                }
-                added.append(gateway_name)
-            elif interfaces[gateway_name].get("enabled") != enabled_value:
-                # already present - just update the enabled status (no duplicate)
-                interfaces[gateway_name]["enabled"] = enabled_value
-                updated.append(gateway_name)
+        # LCS Global replaced the old public gateway. It is set up by the subscription (the
+        # LCS Global popup), never as a hand-made interface.
 
         # Command Center PRO Client
         # Reticulum accepts either "interface_enabled" or "enabled" (Reticulum.py
@@ -1242,6 +1237,14 @@ class ReticulumMeshChat:
                     for sub in sub_interfaces:
                         del interface_data[sub["name"]]
 
+                # LCS Global: managed by the subscription; its address and passphrase are never shown
+                if interface_name == LCS_GLOBAL_INTERFACE:
+                    interface_data = {
+                        "type": "LCSGlobal",
+                        "enabled": interface_data.get("enabled", "no"),
+                        "description": "Subscription gateway",
+                    }
+
                 processed_interfaces[interface_name] = interface_data
 
             return web.json_response({
@@ -1255,6 +1258,13 @@ class ReticulumMeshChat:
             # get request data
             data = await request.json()
             interface_name = data.get('name')
+
+            # LCS Global: back on (it connects whenever the trial or plan is active)
+            if interface_name == LCS_GLOBAL_INTERFACE:
+                self.lcs_global.set_paused(False)
+                return web.json_response({
+                    "message": "LCS Global is on. It connects in a moment while your trial or plan is active.",
+                })
 
             # enable interface
             if "interfaces" in self.reticulum.config:
@@ -1278,6 +1288,13 @@ class ReticulumMeshChat:
             # get request data
             data = await request.json()
             interface_name = data.get('name')
+
+            # LCS Global: paused until switched back on (the subscription itself is unchanged)
+            if interface_name == LCS_GLOBAL_INTERFACE:
+                await asyncio.to_thread(self.lcs_global.set_paused, True)
+                return web.json_response({
+                    "message": "LCS Global is switched off on this computer. Your trial or plan is unchanged.",
+                })
 
             # disable interface
             if "interfaces" in self.reticulum.config:
@@ -1390,6 +1407,13 @@ class ReticulumMeshChat:
             data = await request.json()
             interface_name = data.get('name')
 
+            # LCS Global: remove it properly (and stop the trial starting by itself)
+            if interface_name == LCS_GLOBAL_INTERFACE:
+                await asyncio.to_thread(self.lcs_global.remove_interface)
+                return web.json_response({
+                    "message": "LCS Global removed. Your trial or plan is unchanged; add it again any time.",
+                })
+
             # delete interface
             if "interfaces" in self.reticulum.config:
                 del self.reticulum.config["interfaces"][interface_name]
@@ -1427,6 +1451,18 @@ class ReticulumMeshChat:
             interfaces = {}
             if "interfaces" in self.reticulum.config:
                 interfaces = self.reticulum.config["interfaces"]
+
+            # LCS Global is set up from its own page, never by hand
+            if interface_name.strip().lower() in {LCS_GLOBAL_INTERFACE.lower(), "lcs gateway"} or interface_type == "LCSGlobal":
+                return web.json_response({
+                    "message": "\"{}\" is reserved. Add LCS Global from Add Interface > LCS Global.".format(interface_name),
+                }, status=422)
+
+            # no hand-made interface may point at an LCS server
+            for host_key in ("target_host", "forward_ip"):
+                host_value = data.get(host_key)
+                if host_value and await asyncio.to_thread(self.lcs_global.is_reserved_resolved, host_value):
+                    return web.json_response({"message": LCS_RESERVED_MESSAGE}, status=422)
 
             # ensure name is not for an existing interface, to prevent overwriting
             if allow_overwriting_interface is False and interface_name in interfaces:
@@ -1773,6 +1809,10 @@ class ReticulumMeshChat:
                         if interface_name not in selected_interface_names:
                             continue
 
+                    # LCS Global's settings belong to this subscription only: never exported
+                    if interface_name == LCS_GLOBAL_INTERFACE:
+                        continue
+
                     # add interface to output
                     output.append(f"[[{interface_name}]]")
                     for key, value in interface.items():
@@ -1839,10 +1879,16 @@ class ReticulumMeshChat:
                 # parse interfaces from config
                 interfaces = InterfaceConfigParser.parse(config)
 
-                # find selected interfaces
+                # find selected interfaces (never LCS Global, or anything aimed at an LCS server)
                 selected_interfaces = []
+                skipped = []
                 for interface in interfaces:
                     if interface["name"] in selected_interface_names:
+                        if interface["name"].strip().lower() in {LCS_GLOBAL_INTERFACE.lower(), "lcs gateway"} or \
+                                self.lcs_global.is_reserved_host(interface.get("target_host")) or \
+                                self.lcs_global.is_reserved_host(interface.get("forward_ip")):
+                            skipped.append(interface["name"])
+                            continue
                         selected_interfaces.append(interface)
 
                 # convert interfaces to object
@@ -1870,7 +1916,8 @@ class ReticulumMeshChat:
                 self.reticulum.config.write()
 
                 return web.json_response({
-                    "message": "Interfaces imported successfully",
+                    "message": "Interfaces imported successfully" + (
+                        ". Skipped (reserved for LCS Global): " + ", ".join(skipped) if skipped else ""),
                 })
                 
             except Exception as e:
@@ -2006,6 +2053,9 @@ class ReticulumMeshChat:
             print("Reticulum Identity <{}> replaced with <{}>. Previous key saved to {}".format(
                 previous_hash, new_identity.hash.hex(), backup_path,
             ))
+
+            # LCS Global: at the next start, move the trial or plan to the new identity
+            self.lcs_global.remember_identity_reset(backup_path)
 
             return web.json_response({
                 "message": "Identity replaced. Restart LCS MeshChat for it to take effect.",
@@ -2928,6 +2978,10 @@ class ReticulumMeshChat:
                 if "short_name" in interface:
                     interface["interface_name"] = interface["short_name"]
 
+                # LCS Global: never show the gateway's address
+                if interface.get("short_name") == LCS_GLOBAL_INTERFACE:
+                    interface["name"] = "LCS Global"
+
                 if "parent_interface_name" in interface and interface["parent_interface_name"] is not None:
                     interface["parent_interface_hash"] = interface["parent_interface_hash"].hex()
 
@@ -3247,6 +3301,9 @@ class ReticulumMeshChat:
             # and reload the interface to rebuild it.
             AsyncUtils.run_async(self.monitor_autointerfaces())
 
+            # LCS Global: keep its interface in step with the trial or subscription
+            AsyncUtils.run_async(self.lcs_global.run())
+
             # auto launch web browser
             if launch_browser:
                 try:
@@ -3330,6 +3387,82 @@ class ReticulumMeshChat:
             return web.json_response({"config": config})
 
         app = web.Application(client_max_size=1024 * 1024 * 50)  # allow uploading files up to 50mb
+        # ---- LCS Global -------------------------------------------------------------
+
+        def lcs_reply(ok: bool, message: str, **extra):
+            body = {"ok": ok, "message": message, **extra, "lcs_global": self.lcs_global.ui_status()}
+            return web.json_response(body, status=200 if ok else 422)
+
+        # where this identity stands, plans and prices (refreshes from LCS when stale)
+        @routes.get("/api/v1/lcs-global/status")
+        async def index(request):
+            lg = self.lcs_global
+            if request.query.get("refresh") == "1" or lg.status is None or time.time() - lg.status_at > 60:
+                await asyncio.to_thread(lg.call, "/v1/status", "status")
+            if request.query.get("plans") == "1":
+                await asyncio.to_thread(lg.fetch_plans)
+            # just paid (or a trial began elsewhere): connect now rather than at the next round
+            if (lg.status or {}).get("gateway_open") and lg.has_interface() and not lg.is_live(LCS_GLOBAL_INTERFACE) \
+                    and not lg.pref("paused", False):
+                lg.kick()
+            return web.json_response({"lcs_global": lg.ui_status()})
+
+        # "Start 7-day free trial"
+        @routes.post("/api/v1/lcs-global/trial")
+        async def index(request):
+            ok, message = await asyncio.to_thread(self.lcs_global.start_trial)
+            return lcs_reply(ok, message)
+
+        # a plan: returns the checkout link on lcs.network (tied to this identity, so no codes)
+        @routes.post("/api/v1/lcs-global/subscribe")
+        async def index(request):
+            data = await request.json()
+            plan = str(data.get("plan", "")).strip()
+            if not plan or not all(c.isalnum() or c == "-" for c in plan):
+                return lcs_reply(False, "Pick a plan.")
+            url, message = await asyncio.to_thread(self.lcs_global.subscribe_url, plan)
+            return lcs_reply(url is not None, message or "Opening lcs.network...", url=url)
+
+        # "Manage plan" (card, cancel, renew): My Account on lcs.network
+        @routes.post("/api/v1/lcs-global/manage")
+        async def index(request):
+            url = await asyncio.to_thread(self.lcs_global.manage_url)
+            return lcs_reply(True, "Opening lcs.network...", url=url)
+
+        # bought on another device or on the website: link this one in My Account
+        @routes.post("/api/v1/lcs-global/link-device")
+        async def index(request):
+            url, message = await asyncio.to_thread(self.lcs_global.link_device_url)
+            return lcs_reply(url is not None, message, url=url)
+
+        # a code from a family plan or a gift
+        @routes.post("/api/v1/lcs-global/redeem")
+        async def index(request):
+            data = await request.json()
+            ok, message = await asyncio.to_thread(self.lcs_global.redeem, str(data.get("code", "")))
+            return lcs_reply(ok, message)
+
+        # "Check again" (also called when the window comes back into focus after paying)
+        @routes.post("/api/v1/lcs-global/check")
+        async def index(request):
+            self.lcs_global.kick()
+            await asyncio.sleep(2)
+            return lcs_reply(True, "Checked.")
+
+        # the start-up popup's "Don't show this again", and its reminders
+        @routes.post("/api/v1/lcs-global/prefs")
+        async def index(request):
+            data = await request.json()
+            if "popup_dismissed" in data:
+                self.lcs_global.set_pref("popup_dismissed", bool(data["popup_dismissed"]))
+            return lcs_reply(True, "Saved.")
+
+        # remove the LCS Global interface (the trial or plan itself is unchanged)
+        @routes.post("/api/v1/lcs-global/remove")
+        async def index(request):
+            await asyncio.to_thread(self.lcs_global.remove_interface)
+            return lcs_reply(True, "LCS Global removed. Your trial or plan is unchanged; add it again any time.")
+
         app.add_routes(routes)
 
         # mount the rns link bridge and the microreticulum rnode console.
