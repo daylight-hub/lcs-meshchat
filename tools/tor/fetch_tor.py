@@ -22,6 +22,7 @@ import hashlib
 import json
 import os
 import platform
+import re
 import shutil
 import subprocess
 import sys
@@ -80,17 +81,44 @@ def gpg(*args: str, check=True) -> subprocess.CompletedProcess:
     return subprocess.run([exe, "--batch", *args], capture_output=True, text=True, check=check)
 
 
+def gpg_path(path: str) -> str:
+    """Git for Windows' gpg is an MSYS program: it reads C:\\a\\b as a relative path, but C:/a/b works."""
+    return path.replace("\\", "/") if sys.platform == "win32" else path
+
+
 def verify_signature(home: str, data_path: str, sig_path: str):
-    os.environ["GNUPGHOME"] = home
-    r = gpg("--auto-key-locate", "nodefault,wkd", "--locate-keys", TB_KEY_EMAIL, check=False)
+    home, data_path, sig_path = gpg_path(home), gpg_path(data_path), gpg_path(sig_path)
+    os.environ.pop("GNUPGHOME", None)
+    r = gpg("--homedir", home, "--auto-key-locate", "nodefault,wkd", "--locate-keys", TB_KEY_EMAIL, check=False)
     if r.returncode != 0:
         die("couldn't fetch the Tor Browser signing key by WKD:\n" + r.stderr)
-    r = gpg("--status-fd", "1", "--verify", sig_path, data_path, check=False)
+    r = gpg("--homedir", home, "--status-fd", "1", "--verify", sig_path, data_path, check=False)
     good = [ln for ln in r.stdout.splitlines() if ln.startswith("[GNUPG:] VALIDSIG ")]
     # VALIDSIG <signing (sub)key fpr> ... <primary key fpr> (last field)
     if r.returncode != 0 or not good or good[0].split()[-1].upper() != TB_KEY_FPR:
         die("the checksum file's signature is NOT valid for the Tor Browser key:\n" + r.stdout + r.stderr)
     print("fetch_tor: signature OK (Tor Browser Developers, " + TB_KEY_FPR + ")")
+
+
+EXEC_MAGIC = (b"\x7fELF", b"MZ", b"\xcf\xfa\xed\xfe", b"\xce\xfa\xed\xfe", b"\xca\xfe\xba\xbe")
+
+
+def find_tor_program(root: str, exe_name: str) -> str | None:
+    """The real tor program in the bundle. Newer bundles also carry a "debug" folder with a file
+    of the same name (debug symbols), and the data folder may have one too: skip those."""
+    found = []
+    for d, _, files in os.walk(root):
+        if exe_name not in files:
+            continue
+        parts = os.path.relpath(d, root).replace("\\", "/").lower().split("/")
+        if "debug" in parts or "data" in parts:
+            continue
+        path = os.path.join(d, exe_name)
+        with open(path, "rb") as fh:
+            if not fh.read(4).startswith(EXEC_MAGIC):
+                continue
+        found.append((0 if os.path.basename(d).lower() == "tor" else 1, len(parts), path))
+    return sorted(found)[0][2] if found else None
 
 
 def main():
@@ -133,9 +161,10 @@ def main():
             tf.extractall(ex)
 
         exe_name = "tor.exe" if sys.platform == "win32" else "tor"
-        tor_bin = next((os.path.join(d, exe_name) for d, _, files in os.walk(ex) if exe_name in files), None)
+        tor_bin = find_tor_program(ex, exe_name)
         if not tor_bin:
             die("no tor program in the bundle")
+        print(f"fetch_tor: using {os.path.relpath(tor_bin, ex)}")
         shutil.rmtree(OUT, ignore_errors=True)
         shutil.copytree(os.path.dirname(tor_bin), OUT)
         for d, _, files in os.walk(ex):
@@ -149,7 +178,9 @@ def main():
         env[var] = OUT
     out = subprocess.run([tor_path, "--version"], capture_output=True, text=True, env=env).stdout
     first = out.splitlines()[0] if out else ""
-    if f"Tor version {TOR_VERSION}." not in first:
+    # e.g. "Tor version 0.4.9.15." or "Tor version 0.4.9.15 (git-4d8efff53a86670b)."
+    found = re.match(r"Tor version (\d+\.\d+\.\d+\.\d+)\b", first)
+    if not found or found.group(1) != TOR_VERSION:
         shutil.rmtree(OUT, ignore_errors=True)
         die(f"the bundle's tor is {first or 'unknown'}, not {TOR_VERSION}. Set TOR_BROWSER_VERSION to the "
             f"Tor Browser release that ships tor {TOR_VERSION}, or update TOR_VERSION after reviewing the new release.")

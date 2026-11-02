@@ -107,6 +107,7 @@ jobs:
   build_mac:
     if: startsWith(github.ref, 'refs/tags/') || (github.event_name == 'workflow_dispatch' && inputs.make_release)
     strategy:
+      fail-fast: false   # one Mac build failing shouldn't cancel the other
       matrix:
         os: [ macos-15, macos-15-intel ]
     runs-on: ${{ matrix.os }}
