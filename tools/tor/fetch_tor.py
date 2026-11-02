@@ -74,25 +74,29 @@ def platform_tag() -> str:
     die(f"no official Tor Expert Bundle for {sys.platform}/{machine}; MeshChat will use a system tor instead")
 
 
-def gpg(*args: str, check=True) -> subprocess.CompletedProcess:
+def gpg(*args: str, cwd: str | None = None, check=True) -> subprocess.CompletedProcess:
     exe = shutil.which("gpg") or shutil.which("gpg2")
     if not exe:
         die("gpg is needed to check the Tor Project's signature")
-    return subprocess.run([exe, "--batch", *args], capture_output=True, text=True, check=check)
-
-
-def gpg_path(path: str) -> str:
-    """Git for Windows' gpg is an MSYS program: it reads C:\\a\\b as a relative path, but C:/a/b works."""
-    return path.replace("\\", "/") if sys.platform == "win32" else path
+    return subprocess.run([exe, "--batch", *args], capture_output=True, text=True, check=check, cwd=cwd)
 
 
 def verify_signature(home: str, data_path: str, sig_path: str):
-    home, data_path, sig_path = gpg_path(home), gpg_path(data_path), gpg_path(sig_path)
+    """gpg runs inside the folder that holds everything and is only given names relative to it.
+    Git for Windows' gpg is an MSYS program and misreads Windows paths (C:\\... and C:/... alike)
+    as relative ones, so no absolute path is ever passed to it."""
+    work = os.path.dirname(home)
+    rel = lambda p: os.path.relpath(p, work).replace("\\", "/")  # noqa: E731
     os.environ.pop("GNUPGHOME", None)
-    r = gpg("--homedir", home, "--auto-key-locate", "nodefault,wkd", "--locate-keys", TB_KEY_EMAIL, check=False)
-    if r.returncode != 0:
-        die("couldn't fetch the Tor Browser signing key by WKD:\n" + r.stderr)
-    r = gpg("--homedir", home, "--status-fd", "1", "--verify", sig_path, data_path, check=False)
+    r = gpg("--homedir", rel(home), "--auto-key-locate", "nodefault,wkd", "--locate-keys", TB_KEY_EMAIL,
+            cwd=work, check=False)
+    if r.returncode != 0:  # WKD unreachable: try the keyserver (the fingerprint is checked below either way)
+        r2 = gpg("--homedir", rel(home), "--keyserver", "hkps://keys.openpgp.org", "--recv-keys", TB_KEY_FPR,
+                 cwd=work, check=False)
+        if r2.returncode != 0:
+            die("couldn't fetch the Tor Browser signing key:\n" + r.stderr + r2.stderr)
+    r = gpg("--homedir", rel(home), "--status-fd", "1", "--verify", rel(sig_path), rel(data_path),
+            cwd=work, check=False)
     good = [ln for ln in r.stdout.splitlines() if ln.startswith("[GNUPG:] VALIDSIG ")]
     # VALIDSIG <signing (sub)key fpr> ... <primary key fpr> (last field)
     if r.returncode != 0 or not good or good[0].split()[-1].upper() != TB_KEY_FPR:
