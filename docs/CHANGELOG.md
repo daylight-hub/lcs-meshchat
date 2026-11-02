@@ -3,6 +3,44 @@
 Version history for LCS MeshChat. The release workflow reads the
 section matching the version being built and uses it as the release body.
 
+### What's new in v2.1.0
+
+**Connect through Tor.** LCS Global can now go through the Tor network, straight
+to the gateway's private onion address, so neither LCS nor anyone watching your
+connection sees this computer's internet address.
+
+- Off by default. Switch it on with **Connect through Tor** on the LCS Global
+  page; a progress bar shows Tor connecting, usually within a minute.
+- Tor is built in (Tor 0.4.9.15, the Tor Project's own build, checked against the
+  Tor Project's signature when MeshChat is built and against its fingerprint
+  every time before it starts). No second app is needed. If the built-in Tor
+  isn't there, MeshChat uses a Tor program on the computer or a Tor Browser
+  that's open.
+- MeshChat's Tor is a client only: it listens on this computer alone, never
+  carries other people's traffic, and stops when MeshChat stops. While the
+  switch is off it doesn't run at all.
+- When Tor is on, MeshChat never falls back to a direct connection.
+- Messages work as usual; voice calls get a noticeable delay over Tor.
+
+**Update notice.** When a newer LCS MeshChat is released, a popup says so at
+start-up, with a download button for the same kind of file you have installed
+(Windows installer or portable, Mac for your processor, Linux AppImage), or the
+update commands in Docker. Tick "Don't show this again" to hide it for that
+version.
+
+The notice also checks the LCS download mirror (public.lcs.network/downloads)
+and offers its newest file of the same kind, so it works even without GitHub.
+
+**LCS Helpdesk.** Every identity now starts with the LCS Helpdesk in Messages,
+with a welcome message, as in Liberty Chat. Delete or rename it and it stays
+that way.
+
+**Credits and Licenses** at the bottom of the About page list the open-source
+projects LCS MeshChat is built on, with their full license texts.
+
+The Docker image now builds Tor from the reviewed source release, and gets a
+version tag (for example `:2.1.0`) as well as `:latest`.
+
 ### What's new in v2.0.9
 
 **LCS Global comes to LCS MeshChat.** The same subscription connection to the

@@ -4,6 +4,7 @@ on:
   push:
     branches:
       - lcs
+      - "2.0.9"   # 2.0.9 and later (LCS Global, Tor)
     tags:
       - "*"
   workflow_dispatch:
@@ -33,9 +34,11 @@ jobs:
       - uses: actions/checkout@v4
         with:
           fetch-depth: 0 # full history and tags, so release notes can list commits since the last tag
-      - name: Compute lowercase image name
+      - name: Compute lowercase image name and version
         id: img
-        run: echo "name=ghcr.io/${GITHUB_REPOSITORY_OWNER,,}/lcs-meshchat" >> "$GITHUB_OUTPUT"
+        run: |
+          echo "name=ghcr.io/${GITHUB_REPOSITORY_OWNER,,}/lcs-meshchat" >> "$GITHUB_OUTPUT"
+          echo "version=$(node -p "require('./package.json').version")" >> "$GITHUB_OUTPUT"
       - uses: docker/setup-qemu-action@v3
       - uses: docker/setup-buildx-action@v3
       - name: Log in to ghcr
@@ -50,9 +53,11 @@ jobs:
           context: .
           platforms: linux/amd64,linux/arm64
           push: true
+          # :latest always follows the newest line (the 2.0.9 branch); every build also gets its
+          # version number, so older versions stay available (e.g. :2.1.0)
           tags: |
             ${{ steps.img.outputs.name }}:latest
-            ${{ steps.img.outputs.name }}:lcs
+            ${{ steps.img.outputs.name }}:${{ steps.img.outputs.version }}
           labels: |
             org.opencontainers.image.title=LCS MeshChat
             org.opencontainers.image.source=${{ github.server_url }}/${{ github.repository }}
@@ -78,6 +83,9 @@ jobs:
         run: pip install -r requirements.txt
       - name: Install NodeJS Deps
         run: npm install
+      - name: Fetch and verify Tor
+        shell: bash
+        run: python tools/tor/fetch_tor.py
       - name: Build Electron App
         run: npm run dist
       - name: Generate release notes
@@ -126,6 +134,10 @@ jobs:
         run: pip install -r requirements.txt
       - name: Install NodeJS Deps
         run: npm install
+      - name: Fetch and verify Tor
+        run: |
+          brew install gnupg
+          python tools/tor/fetch_tor.py
       - name: Build Electron App (with DMG-eject retry)
         run: |
           attempt=1
@@ -176,6 +188,9 @@ jobs:
         run: pip install -r requirements.txt
       - name: Install NodeJS Deps
         run: npm install
+      - name: Fetch and verify Tor
+        shell: bash
+        run: python tools/tor/fetch_tor.py
       - name: Build Electron App
         run: npm run dist
       - name: Generate release notes

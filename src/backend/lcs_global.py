@@ -35,6 +35,8 @@ import urllib.request
 
 import RNS
 
+from .lcs_tor import HTTPSOverTor, TorClient
+
 PRODUCT_NAME = "LCS Global"
 INTERFACE_NAME = "LCS Global"
 API_BASE = os.environ.get("LCS_GLOBAL_API", "https://update.lcs.network").rstrip("/")
@@ -57,6 +59,11 @@ def _tls_context() -> ssl.SSLContext:
 
 
 TLS = _tls_context()
+
+
+def http_client_errors():
+    import http.client
+    return http.client.HTTPException
 
 
 def friendly_error(exc: Exception) -> str:
@@ -162,6 +169,8 @@ class LcsGlobal:
         self.kick_event: asyncio.Event | None = None
         self.loop: asyncio.AbstractEventLoop | None = None
         self.plans = self.prefs.get("plans") or FALLBACK_PLANS
+        # Optional: reach LCS and the gateway through Tor (off unless switched on)
+        self.tor = TorClient(app.storage_dir, self.pref, self.set_pref)
 
     # ------------------------------------------------------------------ prefs
 
@@ -258,7 +267,8 @@ class LcsGlobal:
 
     def live_host(self) -> str | None:
         section = self.app.reticulum.config.get("interfaces", {}).get(INTERFACE_NAME)
-        return section.get("target_host") if section else None
+        host = section.get("target_host") if section else None
+        return None if host in ("127.0.0.1", "localhost") else host  # through Tor: the local relay
 
     @staticmethod
     def is_live(name: str) -> bool:
@@ -345,11 +355,17 @@ class LcsGlobal:
     def apply_session(self, session: dict) -> bool:
         """Write the gateway settings from a session into the interface. True if anything changed."""
         interfaces = self.interfaces()
+        host, port = str(session["host"]), int(session["port"])
+        if self.tor_enabled():
+            # Reticulum connects to the local relay, which goes through Tor to the gateway (its
+            # onion address when the server has one).
+            self.tor.relay.set_target(host, port)
+            host, port = "127.0.0.1", self.tor.relay.start()
         wanted = {
             "type": "TCPClientInterface",
             "enabled": "yes",
-            "target_host": str(session["host"]),
-            "target_port": str(int(session["port"])),
+            "target_host": host,
+            "target_port": str(port),
             "mode": "full",
             "bootstrap_only": "no",
         }
@@ -408,16 +424,19 @@ class LcsGlobal:
         }
         if self.client == "commandcenter" and self.enroll_key:
             body["enroll_key"] = self.enroll_key
+        if self.tor_enabled():
+            body["via"] = "tor"  # the server answers with the gateway's onion address
         if extra:
             body.update(extra(body) if callable(extra) else extra)
         raw = json.dumps(body, separators=(",", ":")).encode()
         return raw, base64.b64encode(ident.sign(raw)).decode()
 
     def _post(self, path: str, raw: bytes, signature: str) -> tuple[int, dict]:
-        req = urllib.request.Request(API_BASE + path, data=raw, method="POST", headers={
-            "Content-Type": "application/json", "X-LCS-Signature": signature,
-            "User-Agent": f"LCS-MeshChat/{self.client_version}",
-        })
+        headers = {"Content-Type": "application/json", "X-LCS-Signature": signature,
+                   "User-Agent": f"LCS-MeshChat/{self.client_version}"}
+        if self.tor_enabled():
+            return self._post_tor(path, raw, headers)
+        req = urllib.request.Request(API_BASE + path, data=raw, method="POST", headers=headers)
         try:
             with urllib.request.urlopen(req, timeout=20, context=TLS) as resp:
                 self.offline = False
@@ -433,6 +452,29 @@ class LcsGlobal:
             self.offline = True
             return 0, {"message": friendly_error(e)}
 
+    def _post_tor(self, path: str, raw: bytes | None, headers: dict, method: str = "POST") -> tuple[int, dict]:
+        """The same request, through Tor. Never falls back to a direct connection."""
+        if not self.tor.wait_ready(45):
+            return 0, {"message": self.tor.message or "Tor isn't connected yet."}
+        host = API_BASE.split("://", 1)[1].split("/", 1)[0]
+        prefix = "/" + API_BASE.split("://", 1)[1].split("/", 1)[1] if "/" in API_BASE.split("://", 1)[1] else ""
+        conn = HTTPSOverTor(host, self.tor.socks_port, TLS, timeout=60)
+        try:
+            conn.request(method, prefix + path, body=raw, headers=headers)
+            resp = conn.getresponse()
+            data = resp.read().decode() or "{}"
+            self.offline = False
+            try:
+                return resp.status, json.loads(data)
+            except ValueError:
+                return resp.status, {}
+        except (OSError, ssl.SSLError, http_client_errors()) as e:
+            RNS.log(f"LCS Global over Tor: {path} failed: {e}", RNS.LOG_WARNING)
+            self.offline = True
+            return 0, {"message": "Couldn't reach LCS through Tor. It keeps trying by itself."}
+        finally:
+            conn.close()
+
     def call(self, path: str, action: str, extra=None, ident=None) -> tuple[int, dict]:
         """Blocking. Signs with the running identity and retries once if this clock is off."""
         ident = ident or self.app.identity
@@ -446,6 +488,12 @@ class LcsGlobal:
         return code, body
 
     def fetch_plans(self):
+        if self.tor_enabled():
+            code, body = self._post_tor("/v1/plans", None, {"User-Agent": f"LCS-MeshChat/{self.client_version}"}, "GET")
+            if code == 200 and body.get("plans"):
+                self.plans = body["plans"]
+                self.set_pref("plans", self.plans)
+            return self.plans
         try:
             with urllib.request.urlopen(API_BASE + "/v1/plans", timeout=15, context=TLS) as resp:
                 plans = json.loads(resp.read().decode()).get("plans") or []
@@ -460,6 +508,12 @@ class LcsGlobal:
 
     def cycle(self) -> float:
         """One round (blocking). Returns seconds until the next one."""
+        if self.tor_enabled():
+            self.tor.start()
+            if self.tor.state == "starting":
+                return 3  # look again shortly; nothing goes out until Tor is ready
+            if not self.tor.ready:
+                return 60  # unavailable or failed: never fall back to a direct connection
         self.try_pending_transfer()
         if not self.has_interface() or self.pref("paused", False):
             if self.status is None or time.time() - self.status_at > 3600:
@@ -487,7 +541,8 @@ class LcsGlobal:
         """Started once with the web server; keeps the interface in step with the subscription."""
         self.loop = asyncio.get_running_loop()
         self.kick_event = asyncio.Event()
-        await asyncio.to_thread(self.refresh_reserved_ips)
+        if not self.tor_enabled():  # through Tor, don't look LCS's names up in the open
+            await asyncio.to_thread(self.refresh_reserved_ips)
         while True:
             try:
                 wait = await asyncio.to_thread(self.cycle)
@@ -503,6 +558,23 @@ class LcsGlobal:
     def kick(self):
         if self.loop and self.kick_event:
             self.loop.call_soon_threadsafe(self.kick_event.set)
+
+    # ------------------------------------------------------------------ Tor
+
+    def tor_enabled(self) -> bool:
+        return bool(self.pref("tor", False))
+
+    def set_tor(self, on: bool):
+        """The "Connect through Tor" switch (blocking)."""
+        self.set_pref("tor", bool(on))
+        if on:
+            self.tor.start()
+        else:
+            self.tor.stop()
+        self.kick()  # get a fresh session for the new route at once
+
+    def shutdown(self):
+        self.tor.stop()
 
     # ------------------------------------------------------------------ user actions (blocking)
 
@@ -606,4 +678,5 @@ class LcsGlobal:
             "popup_dismissed": bool(self.pref("popup_dismissed", False)),
             "watching": time.time() < self.watch_until,
             "offline": bool(getattr(self, "offline", False)),
+            "tor": {"enabled": self.tor_enabled(), **self.tor.ui()},
         }

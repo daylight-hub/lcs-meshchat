@@ -135,6 +135,7 @@ check("signed: client is meshchat", body["client"] == "meshchat" and body["actio
 check("signed: device id is stable", body["dev"] == json.loads(lg._signed_body(app.identity, "status")[0])["dev"])
 check("signed: signature verifies", app.identity.validate(base64.b64decode(sig), raw))
 
-print()
-print(f"{len(ok)} passed, {len(fail)} failed")
-sys.exit(1 if fail else 0)
+if __name__ == "__main__":
+    print()
+    print(f"{len(ok)} passed, {len(fail)} failed")
+    sys.exit(1 if fail else 0)

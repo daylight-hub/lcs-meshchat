@@ -39,6 +39,7 @@ from src.backend.lxmf_message_fields import LxmfImageField, LxmfFileAttachmentsF
 from src.backend.rns_link_bridge import BridgeConfig, LocalBackend, attach_to_app, run_standalone
 from src.backend.blackhole import BlackholeManager
 from src.backend.sideband_commands import SidebandCommands
+from src.backend.update_check import UpdateChecker
 from src.backend.lcs_global import LcsGlobal, INTERFACE_NAME as LCS_GLOBAL_INTERFACE, RESERVED_MESSAGE as LCS_RESERVED_MESSAGE
 
 # hack to avoid below error on windows from soundcard/mediafoundation.py in self._record_chunk()
@@ -192,6 +193,7 @@ class ReticulumMeshChat:
         # LCS Global: the paid internet connection (see src/backend/lcs_global.py). Turns the old
         # hand-made LCS gateway into LCS Global and switches off hand-made interfaces aimed at LCS.
         self.lcs_global = LcsGlobal(self, client_version=self.get_app_version())
+        self.update_checker = UpdateChecker(self.storage_dir, self.get_app_version(), tor_port=self.update_tor_port)
         try:
             self.lcs_global.prepare_config()
         except Exception as e:
@@ -213,6 +215,12 @@ class ReticulumMeshChat:
 
         # set a callback for when an lxmf message is received
         self.message_router.register_delivery_callback(self.on_lxmf_delivery)
+
+        # LCS: the LCS Helpdesk as a named conversation with a welcome message, like Liberty Chat
+        try:
+            self.seed_lcs_helpdesk()
+        except Exception as e:
+            print("LCS Helpdesk: could not add the welcome message: {}".format(e))
 
         # update active propagation node
         self.set_active_propagation_node(self.config.lxmf_preferred_propagation_node_destination_hash.get())
@@ -591,6 +599,13 @@ class ReticulumMeshChat:
         })))
 
     # gets app version from package.json
+    # with "Connect through Tor" on, the update check goes through Tor too (0 = Tor still connecting)
+    def update_tor_port(self):
+        lg = self.lcs_global
+        if not lg.tor_enabled():
+            return None
+        return lg.tor.socks_port if lg.tor.ready else 0
+
     def get_app_version(self) -> str:
         with open(get_file_path("package.json")) as f:
             package_json = json.load(f)
@@ -3457,6 +3472,26 @@ class ReticulumMeshChat:
                 self.lcs_global.set_pref("popup_dismissed", bool(data["popup_dismissed"]))
             return lcs_reply(True, "Saved.")
 
+        # the "Connect through Tor" switch
+        @routes.post("/api/v1/lcs-global/tor")
+        async def index(request):
+            data = await request.json()
+            on = bool(data.get("enabled"))
+            await asyncio.to_thread(self.lcs_global.set_tor, on)
+            return lcs_reply(True, "Connecting through Tor…" if on else "Tor is off. LCS Global connects directly.")
+
+        # a newer LCS MeshChat on GitHub (checked at start-up)
+        @routes.get("/api/v1/app-update")
+        async def index(request):
+            force = request.query.get("refresh") == "1"
+            return web.json_response({"update": await asyncio.to_thread(self.update_checker.check, force)})
+
+        @routes.post("/api/v1/app-update/dismiss")
+        async def index(request):
+            data = await request.json()
+            await asyncio.to_thread(self.update_checker.dismiss, str(data.get("version", "")))
+            return web.json_response({"ok": True})
+
         # remove the LCS Global interface (the trial or plan itself is unchanged)
         @routes.post("/api/v1/lcs-global/remove")
         async def index(request):
@@ -6043,6 +6078,46 @@ class ReticulumMeshChat:
         query = database.Announce.insert(data)
         query = query.on_conflict(conflict_target=[database.Announce.destination_hash], update=data)
         query.execute()
+
+    # LCS: every identity starts with the LCS Helpdesk named, with its own icon, and a welcome
+    # message from it at the top of Messages, so help is one click away (as in Liberty Chat).
+    # Runs once per identity (each identity has its own database): deleting the conversation or
+    # renaming it afterwards sticks. Stored locally only; nothing is sent over the network.
+    LCS_HELPDESK_ADDRESS = "225b1cc4c4a1d9fdf2db6dea26c33f82"
+    LCS_HELPDESK_NAME = "LCS Helpdesk"
+    LCS_HELPDESK_WELCOME = ("Welcome to LCS MeshChat! This is the LCS Helpdesk. Message us here any time with "
+                            "questions about the app, LCS Global or your subscription, and we'll reply as soon as we can.")
+
+    def seed_lcs_helpdesk(self):
+        if Config.get("lcs_helpdesk_seeded") == "1":
+            return
+        helpdesk = self.LCS_HELPDESK_ADDRESS
+        me = self.local_lxmf_destination.hexhash
+        if helpdesk != me:
+            if database.CustomDestinationDisplayName.get_or_none(database.CustomDestinationDisplayName.destination_hash == helpdesk) is None:
+                self.db_upsert_custom_destination_display_name(helpdesk, self.LCS_HELPDESK_NAME)
+            if database.LxmfUserIcon.get_or_none(database.LxmfUserIcon.destination_hash == helpdesk) is None:
+                self.update_lxmf_user_icon(helpdesk, "lifebuoy", "#E8C86A", "#013E74")
+            has_conversation = database.LxmfMessage.select().where(
+                (database.LxmfMessage.source_hash == helpdesk) | (database.LxmfMessage.destination_hash == helpdesk)).exists()
+            if not has_conversation:
+                now = time.time()
+                database.LxmfMessage.insert({
+                    "hash": f"lcs-helpdesk-welcome-{me}",
+                    "source_hash": helpdesk,
+                    "destination_hash": me,
+                    "is_incoming": True,
+                    "state": "delivered",
+                    "progress": 100.0,
+                    "method": "direct",
+                    "delivery_attempts": 0,
+                    "next_delivery_attempt_at": None,
+                    "title": "",
+                    "content": self.LCS_HELPDESK_WELCOME,
+                    "fields": "{}",
+                    "timestamp": now,
+                }).on_conflict_ignore().execute()
+        Config.set("lcs_helpdesk_seeded", "1")
 
     # upserts a custom destination display name to the database
     def db_upsert_custom_destination_display_name(self, destination_hash: str, display_name: str):

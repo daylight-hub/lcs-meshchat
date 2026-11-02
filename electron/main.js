@@ -206,11 +206,23 @@ app.whenReady().then(async () => {
             requiredArguments.push("--storage-dir", getDefaultStorageDir());
         }
 
+        // which download this is, so an update notice can link the same kind of file
+        var installKind = "source";
+        if(process.platform === "win32"){
+            installKind = process.env.PORTABLE_EXECUTABLE_FILE ? "win-portable" : "win-installer";
+        } else if(process.platform === "darwin"){
+            installKind = process.arch === "arm64" ? "mac-arm64" : "mac-x64";
+        } else if(process.env.APPIMAGE){
+            installKind = "linux-appimage";
+        }
+
         // spawn executable
         exeChildProcess = await spawn(exe, [
             ...requiredArguments, // always provide required arguments
             ...userProvidedArguments, // also include any user provided arguments
-        ]);
+        ], {
+            env: { ...process.env, LCS_INSTALL_KIND: installKind },
+        });
 
         // log stdout
         var stdoutLines = [];

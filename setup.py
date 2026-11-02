@@ -1,3 +1,4 @@
+import os
 from cx_Freeze import setup, Executable
 
 setup(
@@ -30,7 +31,9 @@ setup(
             'include_files': [
                 'package.json', # used to determine app version from python
                 'public/', # static files served by web server
-            ],
+            ] + ([
+                ('tor/', 'tor/'), # LCS Global's optional Tor (fetched and verified by tools/tor/fetch_tor.py)
+            ] if os.path.isdir('tor') else []),
             # slim down the build by excluding these unused libs
             'excludes': [
                 'PIL', # saves ~200MB

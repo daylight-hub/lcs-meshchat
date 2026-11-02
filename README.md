@@ -67,6 +67,19 @@ microphone access in a secure context. That setup is in the Docker guide.
 - Hand-made interfaces can't point at lcs.network or any name under it. The old
   "LCS Gateway" interface becomes LCS Global, with the free trial, on first start.
 - Community testnet interfaces were removed from Add Interface.
+- **Connect through Tor** (off by default, on the LCS Global page) sends LCS Global
+  through Tor to the gateway's onion address. Desktop builds ship the Tor Project's
+  own tor (fetched and signature-checked by `tools/tor/fetch_tor.py` at build time,
+  fingerprint-checked before every start); the Docker image builds tor from the
+  source release (`Dockerfile`, SHA-256 pinned, client-only). Without a built-in
+  tor, a `tor` on the PATH, `LCS_TOR_PATH`, or a running Tor Browser is used.
+
+### Update notice
+
+- At start-up MeshChat asks GitHub for the latest published release
+  (`LCS_UPDATE_REPO`, default `daylight-hub/lcs-meshchat`) and, if it's newer,
+  offers the same kind of download that's installed. "Don't show this again" hides
+  it for that version.
 
 ### Branding and navigation
 

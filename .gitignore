@@ -24,3 +24,6 @@ __pycache__/
 # python bytecode
 __pycache__/
 *.pyc
+
+# the desktop build's Tor (fetched by tools/tor/fetch_tor.py, never committed)
+/tor/

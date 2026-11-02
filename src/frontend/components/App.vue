@@ -3,6 +3,7 @@
 
         <!-- LCS Global: start-up popup, offers and renewal reminders -->
         <LcsGlobalModal/>
+        <AppUpdateModal/>
 
         <!-- LCS: Add Interfaces dialog -->
         <div v-if="showLcsDialog" class="fixed inset-0 z-50 flex items-center justify-center p-4 bg-black/50" @click.self="closeLcsDialog">
@@ -118,7 +119,7 @@
                         Liberty Communication Systems, Inc.
                     </div>
                     <div class="text-[11px] text-gray-400 dark:text-zinc-500">
-                        <span>LCS MeshChat version {{ appInfo?.version }} powered by Reticulum MeshChat by Liam Cottle</span>
+                        <span>LCS MeshChat version {{ appInfo?.version }} powered by Reticulum MeshChat</span>
                     </div>
                 </div>
                 <div class="flex my-auto ml-auto mr-0 sm:mr-2 space-x-1 sm:space-x-2">
@@ -526,6 +527,7 @@
 <script>
 import SidebarLink from "./SidebarLink.vue";
 import LcsGlobalModal from "./lcsglobal/LcsGlobalModal.vue";
+import AppUpdateModal from "./AppUpdateModal.vue";
 import LcsGlobal from "../js/LcsGlobal";
 import DialogUtils from "../js/DialogUtils";
 import TelephoneAudioBridge from "../js/TelephoneAudioBridge";
@@ -543,6 +545,7 @@ export default {
         LxmfUserIcon,
         SidebarLink,
         LcsGlobalModal,
+        AppUpdateModal,
     },
     data() {
         return {

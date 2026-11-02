@@ -39,6 +39,9 @@
                     </button>
                 </div>
 
+                <!-- Tor (off unless switched on) -->
+                <LcsGlobalTor v-if="lg.data"/>
+
                 <div class="rounded-3xl bg-white dark:bg-zinc-900 shadow-sm ring-1 ring-black/5 dark:ring-white/10 p-5 sm:p-7">
                     <LcsGlobalPanel :show-status="false"/>
                 </div>
@@ -55,11 +58,12 @@
 <script>
 import MaterialDesignIcon from "../MaterialDesignIcon.vue";
 import LcsGlobalPanel from "./LcsGlobalPanel.vue";
+import LcsGlobalTor from "./LcsGlobalTor.vue";
 import LcsGlobal, { daysLeft } from "../../js/LcsGlobal";
 
 export default {
     name: "LcsGlobalPage",
-    components: { MaterialDesignIcon, LcsGlobalPanel },
+    components: { MaterialDesignIcon, LcsGlobalPanel, LcsGlobalTor },
     data() {
         return { lg: LcsGlobal, checking: false, timer: null };
     },

@@ -113,6 +113,30 @@
                 </div>
             </div>
 
+            <!-- credits and licenses (plain text, as the licenses require the notices to be included) -->
+            <div class="bg-white dark:bg-zinc-900 rounded shadow">
+                <div class="flex border-b border-gray-300 dark:border-zinc-700 text-gray-700 dark:text-zinc-200 p-2 font-semibold">Credits and Licenses</div>
+                <div class="p-2 space-y-3 text-sm text-gray-700 dark:text-zinc-300">
+                    <p>LCS MeshChat is made by Liberty Communication Systems, Inc. It is built on these open-source projects, used under their licenses:</p>
+                    <ul class="space-y-2 list-disc pl-5">
+                        <li><span class="font-semibold text-gray-900 dark:text-zinc-100">Reticulum MeshChat</span>: Copyright © 2024 Liam Cottle. MIT License. LCS MeshChat is a modified version of Reticulum MeshChat. The LCS name, logos and LCS's changes are not covered by that license.</li>
+                        <li><span class="font-semibold text-gray-900 dark:text-zinc-100">Reticulum (RNS)</span>: Copyright © 2016–2026 Mark Qvist. Reticulum License.</li>
+                        <li><span class="font-semibold text-gray-900 dark:text-zinc-100">LXMF</span>: Copyright © 2020–2025 Mark Qvist. Reticulum License.</li>
+                        <li><span class="font-semibold text-gray-900 dark:text-zinc-100">LXST</span> (voice calls): Copyright © Mark Qvist. Creative Commons BY-NC-ND 4.0.</li>
+                        <li><span class="font-semibold text-gray-900 dark:text-zinc-100">Tor</span>: Copyright © 2001–2004 Roger Dingledine, © 2004–2006 Roger Dingledine and Nick Mathewson, © 2007–2019 The Tor Project, Inc. 3-clause BSD License. "Tor" is a trademark of The Tor Project, Inc.</li>
+                        <li>Plus other open-source components (including Electron, Vue and aiohttp), each under its own license.</li>
+                    </ul>
+                    <p>These projects are independent and are not affiliated with, or endorsed by, Liberty Communication Systems, Inc.</p>
+                    <div>
+                        <button @click="toggleLicenses" type="button"
+                                class="inline-flex items-center gap-x-1 rounded-md bg-gray-500 dark:bg-zinc-700 px-2 py-1 text-sm font-semibold text-white shadow-sm hover:bg-gray-400 dark:hover:bg-zinc-600">
+                            {{ licensesText !== null ? "Hide full license texts" : "Show full license texts" }}
+                        </button>
+                    </div>
+                    <pre v-if="licensesText !== null" class="max-h-96 overflow-auto whitespace-pre-wrap rounded bg-gray-50 dark:bg-zinc-950 border border-gray-200 dark:border-zinc-800 p-3 text-xs leading-relaxed text-gray-700 dark:text-zinc-400">{{ licensesText }}</pre>
+                </div>
+            </div>
+
         </div>
     </div>
 </template>
@@ -126,6 +150,7 @@ export default {
         return {
             appInfo: null,
             config: null,
+            licensesText: null,
         };
     },
     mounted() {
@@ -133,6 +158,18 @@ export default {
         this.getConfig();
     },
     methods: {
+        async toggleLicenses() {
+            if (this.licensesText !== null) {
+                this.licensesText = null;
+                return;
+            }
+            try {
+                const response = await fetch("/licenses/THIRD-PARTY-LICENSES.txt");
+                this.licensesText = response.ok ? await response.text() : "The license texts couldn't be loaded.";
+            } catch (e) {
+                this.licensesText = "The license texts couldn't be loaded.";
+            }
+        },
         async getAppInfo() {
             try {
                 const response = await window.axios.get("/api/v1/app/info");
