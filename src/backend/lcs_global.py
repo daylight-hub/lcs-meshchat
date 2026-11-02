@@ -454,8 +454,13 @@ class LcsGlobal:
 
     def _post_tor(self, path: str, raw: bytes | None, headers: dict, method: str = "POST") -> tuple[int, dict]:
         """The same request, through Tor. Never falls back to a direct connection."""
+        self.tor.start()  # no-op if it's already running
         if not self.tor.wait_ready(45):
-            return 0, {"message": self.tor.message or "Tor isn't connected yet."}
+            if self.tor.state in ("error", "unavailable"):
+                # Say plainly that it's the Tor switch: nothing goes out directly while it's on.
+                return 0, {"message": f"Connect through Tor is on, but Tor isn't working: {self.tor.message} "
+                                      "Turn off Connect through Tor on the LCS Global page to connect directly."}
+            return 0, {"message": "Still connecting to the Tor network. Try again in a moment."}
         host = API_BASE.split("://", 1)[1].split("/", 1)[0]
         prefix = "/" + API_BASE.split("://", 1)[1].split("/", 1)[1] if "/" in API_BASE.split("://", 1)[1] else ""
         conn = HTTPSOverTor(host, self.tor.socks_port, TLS, timeout=60)

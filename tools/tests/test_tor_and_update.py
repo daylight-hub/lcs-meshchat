@@ -239,6 +239,13 @@ def broken(url):
 
 check("update: offline says nothing", UpdateChecker(tempfile.mkdtemp(), "2.0.9", fetch=broken).check()["available"] is False)
 
+# ---- packaging: tor must reach the app byte-for-byte (cx_Freeze rewrites binaries it copies)
+pkg = json.load(open(ROOT / "package.json"))
+for osname in ("mac", "win", "linux"):
+    extra = pkg["build"][osname].get("extraFiles") or []
+    check(f"packaging: {osname} copies tor with electron-builder", any(e.get("from") == "tor" and e["to"].endswith("build/exe/tor") for e in extra))
+check("packaging: cx_Freeze doesn't touch tor", "('tor/', 'tor/')" not in open(ROOT / "setup.py").read())
+
 print()
 print(f"{len(ok)} passed, {len(fail)} failed")
 sys.exit(1 if fail else 0)

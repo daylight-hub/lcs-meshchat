@@ -1,6 +1,6 @@
 {
   "name": "lcs-meshchat",
-  "version": "2.1.0",
+  "version": "2.1.1",
   "description": "LCS MeshChat - a Liberty Communication Systems distribution of Reticulum MeshChat",
   "main": "electron/main.js",
   "scripts": {
@@ -45,6 +45,13 @@
           "filter": [
             "**/*"
           ]
+        },
+        {
+          "from": "tor",
+          "to": "Resources/app/electron/build/exe/tor",
+          "filter": [
+            "**/*"
+          ]
         }
       ],
       "icon": "icon.icns"
@@ -66,6 +73,13 @@
           "filter": [
             "**/*"
           ]
+        },
+        {
+          "from": "tor",
+          "to": "Resources/app/electron/build/exe/tor",
+          "filter": [
+            "**/*"
+          ]
         }
       ],
       "icon": "icon.ico"
@@ -77,6 +91,13 @@
         {
           "from": "build/exe",
           "to": "resources/app/electron/build/exe",
+          "filter": [
+            "**/*"
+          ]
+        },
+        {
+          "from": "tor",
+          "to": "resources/app/electron/build/exe/tor",
           "filter": [
             "**/*"
           ]

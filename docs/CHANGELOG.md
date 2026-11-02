@@ -3,6 +3,15 @@
 Version history for LCS MeshChat. The release workflow reads the
 section matching the version being built and uses it as the release body.
 
+### What's new in v2.1.1
+
+- **Mac and Linux: the built-in Tor works.** The build tool used for MeshChat's
+  backend rewrote the Tor program while packaging it, so it no longer matched
+  its fingerprint and MeshChat (correctly) refused to start it. Tor is now
+  packaged untouched. Windows wasn't affected.
+- With **Connect through Tor** on and Tor not working, LCS Global's buttons now
+  say so plainly and tell you to turn Tor off to connect directly.
+
 ### What's new in v2.1.0
 
 **Connect through Tor.** LCS Global can now go through the Tor network, straight

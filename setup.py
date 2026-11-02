@@ -31,9 +31,11 @@ setup(
             'include_files': [
                 'package.json', # used to determine app version from python
                 'public/', # static files served by web server
-            ] + ([
-                ('tor/', 'tor/'), # LCS Global's optional Tor (fetched and verified by tools/tor/fetch_tor.py)
-            ] if os.path.isdir('tor') else []),
+            ],
+            # LCS Global's Tor (tools/tor/fetch_tor.py) is NOT listed here: cx_Freeze rewrites the
+            # rpath / library references of binaries it copies, which changes tor and breaks its
+            # fingerprint (and its signature on macOS). electron-builder copies it untouched instead
+            # (package.json > build > extraFiles).
             # slim down the build by excluding these unused libs
             'excludes': [
                 'PIL', # saves ~200MB
