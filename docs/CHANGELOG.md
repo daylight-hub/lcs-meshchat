@@ -763,7 +763,8 @@ unchanged, so identities and message history carry over as-is.
   and Debian, reaching the console through it and troubleshooting are now in
   [`docs/DOCKER.md`](DOCKER.md). Voice — full duplex, push-to-talk half duplex,
   switching codec mid-call, and what each link speed can carry — is in
-  [`docs/VOICE.md`](VOICE.md). The README is a feature list and an index again.
+  a separate voice guide, since folded back into the README. The README is a
+  feature list and an index again.
 
 ### What's new in v1.9.5
 

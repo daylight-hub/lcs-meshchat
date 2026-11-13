@@ -1,29 +1,38 @@
-LCS MeshChat — a Liberty Communication Systems, Inc. distribution
-of Reticulum MeshChat.
+LCS MESHCHAT LICENSE
+====================
+
+LCS MeshChat
+Copyright (c) 2025-2026 Liberty Communication Systems, Inc. All rights reserved.
+
+LCS MeshChat's own code, artwork and changes, and the names "LCS", "Liberty
+Communication Systems", "LCS MeshChat" and "LCS Global" with their logos and the
+lcs.network identity, belong to Liberty Communication Systems, Inc. ("LCS").
+They are not licensed under the open-source licenses below, and may not be used
+to brand or promote other software without LCS's written permission.
+
+Credits
+-------
+
+LCS MeshChat is built on the following open-source projects. Their copyright
+notices are kept, and each is used under its own license:
+
+  * Reticulum, Copyright (c) 2016-2026 Mark Qvist. Reticulum License.
+  * LXMF, Copyright (c) 2020-2025 Mark Qvist. Reticulum License.
+  * LXST, Copyright (c) Mark Qvist. Creative Commons
+    Attribution-NonCommercial-NoDerivatives 4.0 International. Included
+    unmodified.
+  * Reticulum MeshChat, Copyright (c) 2024 Liam Cottle. MIT License, reproduced
+    below. LCS MeshChat is a modified version of Reticulum MeshChat.
+
+The full license texts for these, and for every other component included in
+LCS MeshChat, are in src/frontend/public/licenses/THIRD-PARTY-LICENSES.txt.
+The same file is shown in the app under About > Credits and Licenses.
+
+The names of these projects and their authors are used only to credit their
+work. They do not endorse LCS MeshChat.
 
 ================================================================================
-Modifications, branding, and additions
-================================================================================
-
-Copyright (c) 2025 Liberty Communication Systems, Inc. All rights reserved.
-
-This distribution ("LCS MeshChat") is a modified version of Reticulum MeshChat.
-All modifications, additions, branding, artwork, logos, names, and trademarks of
-Liberty Communication Systems, Inc. ("LCS"), including but not limited to the
-"LCS" and "Liberty Communication Systems" names and logos and the lcs.network
-identity, are the exclusive property of Liberty Communication Systems, Inc. and
-are protected by applicable copyright and trademark law.
-
-The LCS name, logos, and trademarks are NOT licensed under the MIT License below
-and may not be used to endorse, promote, or brand derivative works without the
-prior written permission of Liberty Communication Systems, Inc. Removal or
-alteration of LCS branding does not grant any rights to the LCS marks.
-
-The underlying Reticulum MeshChat software remains licensed under the MIT License
-reproduced below, and that notice is retained as required by its terms.
-
-================================================================================
-Reticulum MeshChat — MIT License (retained as required)
+Reticulum MeshChat: MIT License
 ================================================================================
 
 MIT License

@@ -1,37 +1,47 @@
 <p align="center">
-<img src="./logo/logo-chat-bubble.png" width="150">
+  <img src="./images/lcs-logo-badge.png" alt="Liberty Communication Systems logo" width="160">
 </p>
 
-<h2 align="center">LCS MeshChat</h2>
+<h1 align="center">LCS MeshChat</h1>
 
 <p align="center">
-A Liberty Communication Systems, Inc. distribution of Reticulum MeshChat.<br/>
-built on MeshChat by Liam Cottle · <a href="https://lcs.network">lcs.network</a>
+  <b>Private messaging, voice calls and network tools for Reticulum, on Windows, macOS, Linux and Docker.</b><br>
+  From Liberty Communication Systems, Inc. · <a href="https://lcs.network">lcs.network</a>
 </p>
+
+<p align="center">
+  <img src="./screenshots/carousel.png" alt="LCS MeshChat screenshots: messages, interfaces, network visualiser, a voice call, and the Nomad Network browser" width="820">
+</p>
+
+<details>
+<summary><b>See each screenshot</b></summary>
+<br>
+<p align="center">
+  <img src="./screenshots/messages.png" alt="Messages" width="400">
+  <img src="./screenshots/interfaces.png" alt="Interfaces" width="400">
+  <img src="./screenshots/network-visualiser.png" alt="Network visualiser" width="400">
+  <img src="./screenshots/voice-call.png" alt="Incoming voice call" width="400">
+  <img src="./screenshots/nomad-network.png" alt="Nomad Network browser" width="400">
+</p>
+</details>
 
 ---
 
-**LCS MeshChat** is Liberty Communication Systems' branded distribution of
-Reticulum MeshChat, with additional features for LCS network deployments. It is
-built on the open-source [Reticulum MeshChat](https://github.com/liamcottle/reticulum-meshchat)
-by Liam Cottle (MIT licensed — see `LICENSE`).
+LCS MeshChat sends encrypted messages and voice calls over Reticulum, a mesh
+network that works without the internet. It connects over whatever you have:
+local Wi-Fi and Ethernet, LoRa radios (RNode), or the internet through LCS Global.
+It also works with Liberty Chat on Android, and with other Reticulum apps such as
+Sideband and NomadNet.
 
-## Documentation
-
-| | |
-|---|---|
-| [**Docker**](docs/DOCKER.md) | Container install, the HTTPS reverse proxy for OpenWrt and Debian, reaching the console through it, troubleshooting |
-| [**Voice calls**](docs/VOICE.md) | Full duplex, push-to-talk, switching codec mid-call, and what each link speed can carry |
-| [**RNS console bridge**](docs/rns-console-bridge.md) | How remote node management over Reticulum works, and the one-time setup each node needs |
-| [**Changelog**](docs/CHANGELOG.md) | Version history |
-| [Raspberry Pi](docs/meshchat_on_raspberry_pi.md) · [Android/Termux](docs/meshchat_on_android_with_termux.md) | Upstream platform guides |
+No phone number, email address or account is needed.
 
 ## Install
 
-**Desktop** — download the installer for Windows, macOS or Linux from
-[Releases](https://github.com/daylight-hub/lcs-meshchat/releases).
+**Desktop:** download the installer for Windows, macOS or Linux from this
+repository's Releases page.
 
-**Docker** — see [docs/DOCKER.md](docs/DOCKER.md). The short version:
+**Docker:** the short version is below. The full guide, including the HTTPS setup
+that voice calls need in a browser, is in [docs/DOCKER.md](docs/DOCKER.md).
 
 ```sh
 docker run -d --name lcs-meshchat --restart unless-stopped \
@@ -42,199 +52,95 @@ docker run -d --name lcs-meshchat --restart unless-stopped \
   --storage-dir=/config/.meshchat --headless
 ```
 
-Voice calls in Docker need an HTTPS reverse proxy, because browsers only give a page
-microphone access in a secure context. That setup is in the Docker guide.
-
 ---
 
 ## Features
 
+### Messaging
+- End-to-end encrypted messages, pictures, files and voice clips
+- Delivery status, and messages held for offline contacts on propagation nodes
+- New-message chime and incoming-call ringtone
+- Block contacts, and share or subscribe to block lists
+
+### Voice calls
+- Full duplex, or push-to-talk for slow links such as LoRa
+- Switch between full duplex and push-to-talk, or change the codec (Codec2 or
+  Opus), during a call without hanging up
+
 ### LCS Global
+- Connects you to the Liberty network over Wi-Fi, Ethernet or mobile data, so you
+  can reach people out of radio range
+- Free 7-day trial, no data limits
+- Sets itself up after payment: no codes or settings to type in
+- Optional connection through Tor
 
-- **LCS Global** connects MeshChat to the Liberty network over Wi-Fi, Ethernet or
-  mobile data, with a free 7-day trial and no data limits. A popup introduces it at
-  start-up (until "Don't show this message again" is ticked), and it has its own page
-  in the sidebar, as the first entry under Add Interface, and in Add LCS Interfaces.
-- Payment happens on lcs.network. The checkout link carries a one-time device code,
-  so the plan connects here by itself as soon as payment goes through: no codes.
-- The interface is managed for you: its address, port and monthly passphrase come
-  from LCS after a signed check-in with your identity and update without a restart.
-  It is hidden from the interface list, never exported, and can't be edited by hand.
-- Renewal reminders (trial ending, trial ended, payment due, ended) appear at most
-  once a day each, like Liberty Chat's.
-- Resetting your identity moves the trial or plan to the new identity at the next
-  start (both identities sign the move).
-- Hand-made interfaces can't point at lcs.network or any name under it. The old
-  "LCS Gateway" interface becomes LCS Global, with the free trial, on first start.
-- Community testnet interfaces were removed from Add Interface.
-- **Connect through Tor** (off by default, on the LCS Global page) sends LCS Global
-  through Tor to the gateway's onion address. Desktop builds ship the Tor Project's
-  own tor (fetched and signature-checked by `tools/tor/fetch_tor.py` at build time,
-  fingerprint-checked before every start); the Docker image builds tor from the
-  source release (`Dockerfile`, SHA-256 pinned, client-only). Without a built-in
-  tor, a `tor` on the PATH, `LCS_TOR_PATH`, or a running Tor Browser is used.
+### Easy setup
+- **Add LCS Interfaces** adds LCS Global, Command Center PRO, IP RNode or a USB
+  RNode LoRa radio in one step, and finds the radio's port for you
+- RNode transmit power is matched to your radio board, so it can't silently fail
+  to transmit
+- Nine radio presets, from Short Turbo to Long Slow
 
-### Update notice
+### Reliable delivery
+- A failed message asks the network for a fresh route and tries again before
+  falling back to a propagation node
+- Routes are kept across restarts
+- Network connections that drop or are plugged in later recover by themselves
+- A Path Request button in each conversation shows how a contact is reached
 
-- At start-up MeshChat asks GitHub for the latest published release
-  (`LCS_UPDATE_REPO`, default `daylight-hub/lcs-meshchat`) and, if it's newer,
-  offers the same kind of download that's installed. "Don't show this again" hides
-  it for that version.
+### Network tools
+- Nomad Network browser
+- Network visualiser
+- Transport Node console, for nodes on your desk (USB, Bluetooth, Wi-Fi) or
+  across the mesh
+- RNode tools
 
-### Branding and navigation
+### App
+- Tells you when a new version is out
+- Reset your identity without losing your old messages
 
-- Updated to the most recent RNS version 1.5.5, LXMF version 1.1.1, and LXST version 0.5.3.
-- **Add LCS Interfaces** — a header button opens a dialog to add LCS network
-  interfaces to Reticulum. Choose which to add, whether to enable them immediately,
-  and auto-detect a connected RNode's serial port:
-  - **LCS Global** — the subscription connection to the Liberty network over the
-    internet (free 7-day trial). Set up from its popup or page, never by hand.
-  - **Command Center PRO Client** — `liberty.local:4246` (TCP), off by default
-  - **IP RNode** — `iprnode.local:4545` (TCP, network-attached RNode)
-  - **RNode LoRa** — direct serial LoRa radio (914.875 MHz, 17 dBm), added disabled
-    unless a serial port is provided.
-- **Restart button** (Docker builds only) — restarts the app process, relying on the
-  container's `restart: unless-stopped` policy. Does not need the Docker socket.
-- **Incoming call ringtone added**
-- **New message sound** — a short chime when a message arrives, generated in the
-  browser rather than shipped as an audio file, and distinct from the call ringtone.
-  Toggle and test button under Settings → Notifications.
-- **Reset Identity** at the end of Settings — generates a new Reticulum identity and
-  LXMF address after two confirmations. Nothing is deleted: the previous key is kept
-  as `identity.replaced-<timestamp>` and the old database stays under its own
-  identity hash. Takes effect on restart.
-- **RNode management console** in tools
+---
 
-### Radio settings
+## Documentation
 
-- **Board-aware transmit power.** The RNode interface form has a Radio Board picker
-  that holds TX power at or below what that board's radio will accept — SX127x
-  17 dBm, SX1262 22, Heltec v4 28, SX1280 13, SX1280 with PA 20 — with a deliberate
-  override up to 30 dBm. This matters because the failure is silent: the firmware
-  clamps anything over the ceiling, Reticulum compares what it asked for against
-  what the radio reports back, rejects the mismatch, and the interface never comes
-  up. A LilyGo set to 20 dBm simply does not transmit. The form explains that where
-  you set the value.
-- **Presets set modem parameters only**, not transmit power, which belongs to the
-  board rather than to the channel. Nine presets from Short Turbo to Long Slow,
-  including **Long Range / Turbo** (SF11 / 500 kHz / CR 4:8), with **Long Fast** as
-  the default. The app's list and both Transport Console dropdowns are generated
-  from `src/frontend/js/rnode-presets.json`, so they cannot drift apart.
-
-### Voice — [full guide](docs/VOICE.md)
-
-- **Full duplex and half duplex.** Half duplex is push-to-talk: one side transmits at
-  a time, with a hold-to-talk button and a clear transmitting indicator. It roughly
-  halves what the link carries and is what makes voice workable over LoRa.
-- **Switch call mode during a call.** The toggle is live on the call screen and the
-  change is negotiated with the other end, so a call that started full duplex can
-  drop to PTT when conditions worsen instead of being hung up and redialled.
-- **Switch codec mid-call.** Call Quality moves between Codec2 bitrates and Opus
-  while the call is up, signalled to the peer and applied on the next audio frame.
-  The call screen shows the codec the remote end is actually sending.
-- **Voice clips** for links too slow for a live call — recorded and sent as LXMF
-  messages, so they work at any speed and when the other end is offline.
-- Preset guidance per link speed, from Ethernet down to Long Slow, in the voice
-  guide and in Tools.
-
-### Transport Node Console — Tools → Transport Console
-
-Use the same console whether the transport node is on your desk or remote across the mesh. Local and
-remote management differ only in which transport you pick.
-
-- **Local** — Serial (USB-C), Bluetooth, or a LAN WebSocket. All tabs available.
-- **Remote over Reticulum** — MeshChat answers the console's `rns.link.*` protocol at
-  `/rns/ws` and turns it into Reticulum Link and Request traffic aimed at a node's
-  `/provision` handler. It runs on the RNS instance and identity MeshChat already
-  has: no sidecar daemon, no second identity store, no extra port. Node Status and
-  Transport Config are available; Logs and Node Config need a usb-c serial connection,
-  because they rely on legacy KISS frames that do not cross the Reticulum hop.
-- **Auto-connect** — the console finds the bridge itself, in three tiers: this page's
-  own address first, then this computer, then a sweep of the local network for
-  `.local` names on the proxy port. Hosts that have worked before are tried first.
-  When a browser blocks the connection it names the actual cause, and offers a box to
-  type an address into.
-- **Setup Remote Management** — selecting the LCS MeshChat transport explains the one-time usb-c wire step of adding your Identity Hash (not LXMF address) to the node's remote-management allow list.
-- **Network Visualizer** will show the microReticulum node. This is **not** the address to enter in the transport console. Click on the node to open its nomadnet page. You may have to click the button to identify yourself(the fingerprint button). Then click **General**. Copy the management destination listed and paste over in the transport console **destination hash** box. click **connect**.
-
-### Routing and delivery
-
-- **Path request on send failure.** Reticulum only learns a route when something
-  asks for one or the peer announces, so a message that failed on a stale path used
-  to sit failed until that peer announced again. A failed send now asks the network
-  where the destination is and retries on the route that comes back. Tried *before*
-  the propagation node, since direct delivery beats leaving a message on a third
-  party's node — and if no route comes back the message falls through to propagation
-  as before. Throttled to one request per peer per minute and three per peer,
-  resetting after 30 minutes of quiet; a delivery or an announce from that peer
-  clears the count. Toggle under Settings → Messages.
-- **AutoInterface recovers by itself.** AutoInterface enumerates network interfaces
-  and joins its discovery multicast group only in its constructor, so an interface
-  plugged in after launch is never used, and a link that drops and returns never
-  rejoins the group — it reports *Carrier lost* and stays that way. Both are watched
-  for and fixed by reloading that one interface, which rebuilds it in place. Acts
-  within a minute when every interface has gone quiet, and after five minutes when one
-  has gone quiet while others still work — the wifi-up, ethernet-stale case. Rate
-  limited, never interrupts a call, and virtual interfaces that come and go (container
-  veths, VPN tunnels) never trigger one.
-- **The saved path table is loaded at startup**, whether or not transport mode is on.
-  Reticulum writes it on every clean shutdown but only reads it back with transport
-  enabled, so a client used to lose its routes on every restart. Routes are restored
-  without touching the network, and transport mode stays a choice about carrying other
-  people's traffic rather than the price of keeping your own routes.
-- **Request paths on startup.** Reticulum saves its path table on exit but only
-  reloads it when transport mode is on, so a client restart otherwise begins with no
-  paths. A backstop for the few routes the saved table could not restore, usually
-  because their cached announce expired: a route is requested for recent conversation
-  peers, skipping any already reachable, so with a healthy saved table it sends
-  nothing.
-- **Save paths as they are learned.** The table is written shortly after new paths
-  appear rather than only on clean shutdown and every 12 hours, so an unclean kill
-  loses minutes of routes instead of hours.
-- **Path Request button** in each conversation, beside the peer's identity. Asks for
-  a route on demand and reports the hop count and interface, or that nothing
-  answered. Forces the request even when a path is already known, which is the case
-  where the header shows hops but messages still fail.
-
-### Blackhole management
-
-- **Block Contact** in a conversation's three-dot menu, blocks permanently until removed.
-- Identity resolution without needing a recent announce: RNS's persisted
-  known-destinations table, then MeshChat's own announce records, then a path request.
-- **Block an identity directly** by pasting its hash in Settings. The
-  `<angle bracket>` form RNS prints is accepted, as is colon-delimited hex.
-- **Publish** your blocked list for others to subscribe to, served at
-  `rnstransport.info.blackhole'
-  **Subscribe** to lists from transport instances
-  you trust, with a configurable update interval.
-
-### Deployment
-
-- Runs behind an HTTPS reverse proxy with no extra configuration — the bridge accepts
-  same-origin WebSocket connections and tolerates a proxy that strips the port from
-  the `Host` header.
-- Origin allowlist on the bridge, since WebSockets bypass CORS, plus an optional
-  `--rns-bridge-token` shared secret.
+| | |
+|---|---|
+| [Docker](docs/DOCKER.md) | Container install, HTTPS reverse proxy, troubleshooting |
+| [Remote node management](docs/rns-console-bridge.md) | Managing transport nodes over Reticulum, and the one-time setup each node needs |
+| [Raspberry Pi](docs/meshchat_on_raspberry_pi.md) · [Android/Termux](docs/meshchat_on_android_with_termux.md) | Other platforms |
+| [Changelog](docs/CHANGELOG.md) | Version history |
 
 ## Privacy
 
-LCS MeshChat does not collect, transmit or sell personal information. There is no
+LCS MeshChat does not collect, send or sell personal information. There is no
 telemetry, no analytics, no crash reporting and no account. Your identity keys,
-messages and configuration stay in your own storage directory on your own machine.
-Network traffic goes only to the Reticulum interfaces you configure yourself. The
-application is open source and the code in this repository is what is built into the
-released binaries.
+messages and settings stay on your own machine, and network traffic goes only to
+the connections you set up. The code in this repository is what's built into the
+released apps.
 
-**A note on the Windows download warning.** Microsoft Edge and SmartScreen may warn
-that the installer is not commonly downloaded. This is a reputation check on the
-signature of the file, not a finding about its content — it appears for any new
-unsigned binary regardless of what it does. The warning clears once a release
-accumulates download reputation, or sooner with a code-signing certificate.
+**Windows download warning.** Microsoft Edge and SmartScreen may say the installer
+"is not commonly downloaded". That's a check on how often a file has been
+downloaded, not on what it does, and it appears for any new release. It goes away
+as a release gets more downloads.
+
+---
+
+## Credits
+
+LCS MeshChat is built on these open-source projects:
+
+- **Reticulum** by Mark Qvist: the networking and encryption stack
+- **LXMF** by Mark Qvist: the message format and delivery protocol
+- **LXST** by Mark Qvist: voice calls
+- **Reticulum MeshChat** by Liam Cottle: the app LCS MeshChat was originally
+  built from
+
+Their license terms, and those of every other component the app includes, are in
+[LICENSE](LICENSE) and
+[THIRD-PARTY-LICENSES.txt](src/frontend/public/licenses/THIRD-PARTY-LICENSES.txt),
+which is also shown in the app under About.
 
 ## License
 
-The LCS name, logos, branding, and additions are the property of Liberty
-Communication Systems, Inc. The underlying Reticulum MeshChat remains MIT licensed;
-that notice is retained in `LICENSE` as required.
-
-MIT
+Copyright © 2025–2026 Liberty Communication Systems, Inc. The LCS name, logos and
+LCS's changes belong to Liberty Communication Systems, Inc. See [LICENSE](LICENSE).
