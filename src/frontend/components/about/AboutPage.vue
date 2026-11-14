@@ -7,22 +7,46 @@
                 <div class="flex border-b border-gray-300 dark:border-zinc-700 text-gray-700 dark:text-zinc-200 p-2 font-semibold">App Info</div>
                 <div class="divide-y divide-gray-200 dark:divide-zinc-800 text-gray-900 dark:text-zinc-200">
 
-                    <!-- version -->
-                    <div class="flex p-1">
-                        <div class="mr-auto">
-                            <div>Versions</div>
-                            <div class="text-sm text-gray-700 dark:text-zinc-400">
-                                LCS MeshChat v{{ appInfo.version }} • RNS v{{ appInfo.rns_version }} • LXMF v{{ appInfo.lxmf_version }} • LXST v{{ appInfo.lxst_version }} • Python v{{ appInfo.python_version }}
+                    <!-- version, and the update check (GitHub first, then the LCS mirror) -->
+                    <div class="p-1">
+                        <div class="flex">
+                            <div class="mr-auto">
+                                <div>Versions</div>
+                                <div class="text-sm text-gray-700 dark:text-zinc-400">
+                                    LCS MeshChat v{{ appInfo.version }} • RNS v{{ appInfo.rns_version }} • LXMF v{{ appInfo.lxmf_version }} • LXST v{{ appInfo.lxst_version }} • Python v{{ appInfo.python_version }}
+                                </div>
+                            </div>
+                            <div class="mx-2 my-auto shrink-0">
+                                <button @click="checkForUpdates" :disabled="updateChecking"
+                                    type="button"
+                                    class="my-auto inline-flex items-center gap-x-1 rounded-md bg-gray-500 dark:bg-zinc-700 px-2 py-1 text-sm font-semibold text-white shadow-sm hover:bg-gray-400 dark:hover:bg-zinc-600 disabled:opacity-60 focus-visible:outline focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-gray-500 dark:focus-visible:outline-zinc-600">
+                                    <svg v-if="updateChecking" class="w-4 h-4 animate-spin" viewBox="0 0 24 24" fill="none"><circle cx="12" cy="12" r="9" stroke="currentColor" stroke-width="3" stroke-opacity="0.3"/><path d="M21 12a9 9 0 0 0-9-9" stroke="currentColor" stroke-width="3" stroke-linecap="round"/></svg>
+                                    {{ updateChecking ? "Checking…" : "Check for Updates" }}
+                                </button>
                             </div>
                         </div>
-                        <div class="hidden sm:block mx-2 my-auto">
-                            <a target="_blank" 
-                                href="https://github.com/daylight-hub/lcs-meshchat/releases/latest" 
-                                type="button" 
-                                class="my-auto inline-flex items-center gap-x-1 rounded-md bg-gray-500 dark:bg-zinc-700 px-2 py-1 text-sm font-semibold text-white shadow-sm hover:bg-gray-400 dark:hover:bg-zinc-600 focus-visible:outline focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-gray-500 dark:focus-visible:outline-zinc-600">
-                                Check for Updates
-                            </a>
+
+                        <!-- result of the check -->
+                        <div v-if="updateWaiting" class="mt-1 text-sm text-gray-700 dark:text-zinc-400">Waiting for Tor to connect…</div>
+                        <div v-else-if="update && update.available && update.download" class="mt-2 flex flex-wrap items-center gap-2">
+                            <span class="text-sm font-semibold text-gray-900 dark:text-zinc-100">
+                                Update available: v{{ update.latest }}
+                                <span class="font-normal text-gray-600 dark:text-zinc-400">from {{ update.download.source === 'GitHub' ? 'GitHub' : 'the LCS mirror' }}</span>
+                            </span>
+                            <button v-if="update.download.url" @click="openLink(update.download.url)" type="button"
+                                class="inline-flex items-center gap-x-1 rounded-md bg-[#013E74] hover:bg-[#0a4f92] px-2 py-1 text-sm font-semibold text-white shadow-sm">
+                                Download update
+                            </button>
+                            <span v-else-if="update.kind === 'docker'" class="text-sm text-gray-700 dark:text-zinc-400">
+                                Run <code class="px-1 rounded bg-gray-100 dark:bg-zinc-800">docker compose pull</code> then <code class="px-1 rounded bg-gray-100 dark:bg-zinc-800">docker compose up -d</code>
+                            </span>
+                            <button @click="openLink(update.download.page)" type="button"
+                                class="text-sm text-gray-600 dark:text-zinc-400 underline underline-offset-2">
+                                {{ update.download.url || update.kind === 'docker' ? 'All downloads' : 'Open the downloads' }}
+                            </button>
                         </div>
+                        <div v-else-if="update && update.error" class="mt-1 text-sm text-red-600 dark:text-red-400">{{ update.error }}</div>
+                        <div v-else-if="update && update.checked" class="mt-1 text-sm text-gray-700 dark:text-zinc-400">Up to date (v{{ update.current }})</div>
                     </div>
 
                     <!-- reticulum config path -->
@@ -151,6 +175,9 @@ export default {
             appInfo: null,
             config: null,
             licensesText: null,
+            update: null,
+            updateChecking: false,
+            updateWaiting: false,
         };
     },
     mounted() {
@@ -158,6 +185,32 @@ export default {
         this.getConfig();
     },
     methods: {
+        // same check as the start-up popup: GitHub first, then the LCS mirror if GitHub can't be
+        // reached or has no file of the kind installed here
+        async checkForUpdates() {
+            this.updateChecking = true;
+            this.updateWaiting = false;
+            try {
+                for (let tries = 0; tries < 10; tries++) {
+                    const response = await window.axios.get("/api/v1/app-update", { params: { refresh: 1 } });
+                    this.update = response.data.update;
+                    if (!this.update?.waiting) break;
+                    this.updateWaiting = true; // Tor is on and still connecting
+                    await new Promise((resolve) => setTimeout(resolve, 6000));
+                }
+                if (this.update?.waiting) {
+                    this.update = { error: "Tor hasn't connected yet. Try again in a minute." };
+                }
+            } catch (e) {
+                this.update = { error: "Couldn't check for updates. Check your internet connection." };
+            } finally {
+                this.updateChecking = false;
+                this.updateWaiting = false;
+            }
+        },
+        openLink(url) {
+            window.open(url, "_blank", "noopener");
+        },
         async toggleLicenses() {
             if (this.licensesText !== null) {
                 this.licensesText = null;

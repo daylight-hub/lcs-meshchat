@@ -1,9 +1,14 @@
 """Tells the person when a newer LCS MeshChat is available.
 
-Checked once when MeshChat starts (and at most once every 12 hours after that), in two places:
+Checked once when MeshChat starts (at most once every 12 hours after that), and whenever the
+person presses "Check for Updates". As in Liberty Chat:
 
-* GitHub: the latest *published* release (drafts and pre-releases are ignored);
-* the LCS mirror (https://public.lcs.network/downloads/): the newest file of the same kind.
+* GitHub comes first: the latest *published* release (drafts and pre-releases are ignored);
+* the LCS mirror (https://public.lcs.network/downloads/) is checked only when GitHub can't be
+  reached, or its release has no file of the kind installed here. Then its newest file of the
+  same kind is offered.
+
+One download is offered: GitHub's file when it has one, otherwise the mirror's.
 
 Each download link points at the same kind of file that's installed now (Windows installer or
 portable, Mac for this processor, Linux AppImage), since the file names stay the same apart from
@@ -58,6 +63,7 @@ class UpdateChecker:
         self.release: dict | None = None
         self.mirror_files: list[str] = []
         self.checked_at = 0.0
+        self.error: str | None = None
         self._fetch = fetch
         self._tor_port = tor_port or (lambda: None)
 
@@ -112,21 +118,36 @@ class UpdateChecker:
             return self.status()
         if self._fetch is None and self._tor_port() == 0:
             return {**self.status(), "waiting": True}  # Tor is on but still connecting: ask again soon
-        got_any = False
+
+        # 1. GitHub first
+        github_reached = False
         try:
             self.release = json.loads(self._get(f"https://api.github.com/repos/{REPO}/releases/latest",
                                                 "application/vnd.github+json").decode())
-            got_any = True
-        except Exception:  # noqa: BLE001 - offline, private repository, rate limit: say nothing
-            pass
-        try:
-            page = self._get(MIRROR).decode("utf-8", "replace")
-            self.mirror_files = sorted(set(re.findall(r'href="(LCS-ReticulumMeshChat-v[0-9][^"/]*)"', page)))
-            got_any = True
-        except Exception:  # noqa: BLE001
-            pass
-        if got_any:
+            github_reached = True
+        except Exception:  # noqa: BLE001 - offline, blocked, rate limit: fall back to the mirror
+            self.release = None
+
+        # 2. the LCS mirror, only if GitHub can't be reached or has no file of this kind
+        gh = self._github_download()
+        need_mirror = not github_reached or (gh is not None and gh["url"] is None and self.kind in SUFFIXES)
+        mirror_reached = False
+        self.mirror_files = []
+        if need_mirror:
+            try:
+                page = self._get(MIRROR).decode("utf-8", "replace")
+                self.mirror_files = sorted(set(re.findall(r'href="(LCS-ReticulumMeshChat-v[0-9][^"/]*)"', page)))
+                mirror_reached = True
+            except Exception:  # noqa: BLE001
+                pass
+
+        if github_reached or mirror_reached:
             self.checked_at = time.time()
+            self.error = None
+        elif self._fetch is None and self._tor_port():
+            self.error = "Couldn't check for updates through Tor. Try again in a minute."
+        else:
+            self.error = "Couldn't check for updates. Check your internet connection."
         return self.status()
 
     # ------------------------------------------------------------------ result
@@ -160,16 +181,28 @@ class UpdateChecker:
         return {"source": "lcs.network", "version": best[0], "file": best[1],
                 "url": urllib.parse.urljoin(MIRROR, urllib.parse.quote(best[1])), "page": MIRROR}
 
+    def _choose(self) -> dict | None:
+        """GitHub's file first; the mirror's when GitHub has none (or only an older one)."""
+        gh, mi = self._github_download(), self._mirror_download()
+        if gh and gh["url"]:
+            return gh
+        if mi and (not gh or parse_version(mi["version"]) >= parse_version(gh["version"])):
+            return mi
+        return gh
+
     def status(self) -> dict:
-        downloads = [d for d in (self._github_download(), self._mirror_download()) if d]
-        latest = max((d["version"] for d in downloads), key=parse_version, default=None)
+        download = self._choose()
+        latest = download["version"] if download else None
         return {
             "available": bool(latest),
             "current": self.current,
             "latest": latest,
             "kind": self.kind,
-            "downloads": downloads,
+            "download": download,
+            "downloads": [download] if download else [],
             "notes": ((self.release or {}).get("body") or "")[:4000]
-                     if any(d["source"] == "GitHub" and d["version"] == latest for d in downloads) else "",
+                     if download and download["source"] == "GitHub" else "",
             "dismissed": bool(latest) and self._prefs().get("dismissed") == latest,
+            "checked": bool(self.checked_at),
+            "error": self.error,
         }

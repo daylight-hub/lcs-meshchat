@@ -190,45 +190,69 @@ mirror_page = "<html>" + "".join(
     for suf in ("win-installer.exe", "mac-arm64.dmg", "mac-x64.dmg", "linux.AppImage")) + '<a href="Sideband_1.9.7.apk">s</a></html>'
 
 
+calls = []
+
+
 def fetch_both(url):
+    calls.append("github" if "api.github.com" in url else "mirror")
     return json.dumps(release).encode() if "api.github.com" in url else mirror_page.encode()
 
 
 for kind, suf in (("win-installer", "win-installer.exe"), ("mac-arm64", "mac-arm64.dmg"), ("linux-appimage", "linux.AppImage")):
     os.environ["LCS_INSTALL_KIND"] = kind
+    calls.clear()
     st = UpdateChecker(tempfile.mkdtemp(), "2.0.9", fetch=fetch_both).check()
-    gh = next(d for d in st["downloads"] if d["source"] == "GitHub")
-    mi = next(d for d in st["downloads"] if d["source"] == "lcs.network")
-    check(f"update: {kind} gets the same kind of file from GitHub", gh["file"] == f"LCS-ReticulumMeshChat-v2.1.0-{suf}" and gh["url"] == f"https://dl/{suf}")
-    check(f"update: {kind} gets the newest same-kind file from the mirror",
-          mi["file"] == f"LCS-ReticulumMeshChat-v2.1.1-{suf}" and mi["url"] == f"https://public.lcs.network/downloads/LCS-ReticulumMeshChat-v2.1.1-{suf}")
-    check(f"update: {kind} latest is the newest of both", st["available"] and st["latest"] == "2.1.1")
+    dl = st["download"]
+    check(f"update: {kind} gets the same kind of file from GitHub first",
+          dl["source"] == "GitHub" and dl["file"] == f"LCS-ReticulumMeshChat-v2.1.0-{suf}" and dl["url"] == f"https://dl/{suf}")
+    check(f"update: {kind} doesn't ask the mirror when GitHub has the file", calls == ["github"])
+    check(f"update: {kind} offers GitHub's version with its notes", st["available"] and st["latest"] == "2.1.0" and st["notes"] == "New: Tor")
 os.environ["LCS_INSTALL_KIND"] = "win-portable"
 st = UpdateChecker(tempfile.mkdtemp(), "2.0.9", fetch=fetch_both).check()
-check("update: portable isn't on the mirror, so only GitHub's portable is offered",
-      [d["source"] for d in st["downloads"]] == ["GitHub"] and st["downloads"][0]["file"].endswith("win-portable.exe"))
+check("update: portable gets GitHub's portable", st["download"]["source"] == "GitHub" and st["download"]["file"].endswith("win-portable.exe"))
 os.environ["LCS_INSTALL_KIND"] = "docker"
+calls.clear()
 st = UpdateChecker(tempfile.mkdtemp(), "2.0.9", fetch=fetch_both).check()
-check("update: docker gets no file links (pull instead)", st["available"] and all(d["url"] is None for d in st["downloads"]))
+check("update: docker gets no file link (pull instead)", st["available"] and st["download"]["url"] is None and calls == ["github"])
 os.environ["LCS_INSTALL_KIND"] = "win-installer"
-check("update: same version is not offered", not UpdateChecker(tempfile.mkdtemp(), "2.1.1", fetch=fetch_both).check()["available"])
+check("update: same version is not offered", not UpdateChecker(tempfile.mkdtemp(), "2.1.0", fetch=fetch_both).check()["available"])
+calls.clear()
+st = UpdateChecker(tempfile.mkdtemp(), "2.1.0", fetch=fetch_both).check()
+check("update: GitHub says up to date, so the mirror isn't asked", not st["available"] and st["checked"] and st["error"] is None and calls == ["github"])
 
 
 def mirror_only(url):
     if "api.github.com" in url:
-        raise OSError("private repository")
+        raise OSError("blocked")
     return mirror_page.encode()
 
 
 st = UpdateChecker(tempfile.mkdtemp(), "2.0.9", fetch=mirror_only).check()
-check("update: works from the mirror alone (e.g. private GitHub repo)", st["available"] and st["downloads"][0]["source"] == "lcs.network")
+check("update: GitHub unreachable, so the mirror's newest same-kind file is offered",
+      st["available"] and st["download"]["source"] == "lcs.network" and st["latest"] == "2.1.1"
+      and st["download"]["url"] == "https://public.lcs.network/downloads/LCS-ReticulumMeshChat-v2.1.1-win-installer.exe"
+      and st["notes"] == "")
+
+no_files = dict(release, assets=[])
+
+
+def github_without_files(url):
+    calls.append("github" if "api.github.com" in url else "mirror")
+    return json.dumps(no_files).encode() if "api.github.com" in url else mirror_page.encode()
+
+
+calls.clear()
+st = UpdateChecker(tempfile.mkdtemp(), "2.0.9", fetch=github_without_files).check()
+check("update: GitHub's release has no file of this kind, so the mirror is asked and used",
+      calls == ["github", "mirror"] and st["download"]["source"] == "lcs.network" and st["download"]["url"])
 d = tempfile.mkdtemp()
 u = UpdateChecker(d, "2.0.9", fetch=fetch_both)
 u.check()
-u.dismiss("2.1.1")
+u.dismiss("2.1.0")
 check("update: don't show again (for this version)", u.status()["dismissed"] is True)
-mirror_page += '<a href="LCS-ReticulumMeshChat-v2.2.0-win-installer.exe">n</a>'
+release["tag_name"] = "v2.2.0"
 check("update: a later release is shown again", UpdateChecker(d, "2.0.9", fetch=fetch_both).check()["dismissed"] is False)
+release["tag_name"] = "v2.1.0"
 t = UpdateChecker(tempfile.mkdtemp(), "2.0.9", tor_port=lambda: 0)
 check("update: with Tor on but not ready, it waits (no direct connection)", t.check().get("waiting") is True and t.checked_at == 0)
 
@@ -237,7 +261,8 @@ def broken(url):
     raise OSError("offline")
 
 
-check("update: offline says nothing", UpdateChecker(tempfile.mkdtemp(), "2.0.9", fetch=broken).check()["available"] is False)
+st = UpdateChecker(tempfile.mkdtemp(), "2.0.9", fetch=broken).check()
+check("update: offline offers nothing and says it couldn't check", st["available"] is False and st["checked"] is False and "Couldn't check" in st["error"])
 
 # ---- packaging: tor must reach the app byte-for-byte (cx_Freeze rewrites binaries it copies)
 pkg = json.load(open(ROOT / "package.json"))

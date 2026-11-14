@@ -21,31 +21,29 @@
                 </div>
 
                 <div class="px-6 py-5 space-y-4">
-                    <!-- desktop: the same kind of file that's installed now, from GitHub and from the LCS mirror -->
-                    <template v-if="files.length">
+                    <!-- desktop: the same kind of file that's installed now. GitHub first; the LCS mirror
+                         when GitHub can't be reached or has no file of this kind -->
+                    <template v-if="dl && dl.url">
                         <p class="text-sm text-gray-700 dark:text-zinc-300">{{ howTo }}</p>
-                        <div class="space-y-2">
-                            <button v-for="(d, i) in files" :key="d.source" @click="open(d.url)" type="button"
-                                    class="w-full flex items-center gap-3 px-4 py-3 rounded-2xl text-left shadow-sm transition"
-                                    :class="i === 0 ? 'text-white bg-[#013E74] hover:bg-[#0a4f92]' : 'text-[#013E74] bg-white ring-1 ring-[#013E74]/25 hover:bg-gray-50 dark:bg-zinc-800 dark:text-zinc-100 dark:ring-zinc-600'">
-                                <MaterialDesignIcon icon-name="download" class="w-5 h-5 shrink-0"/>
-                                <span class="min-w-0">
-                                    <span class="block font-bold">Download from {{ d.source === 'GitHub' ? 'GitHub' : 'the LCS mirror' }}<span v-if="d.version !== u.latest" class="font-normal"> (version {{ d.version }})</span></span>
-                                    <span class="block text-xs opacity-80 truncate">{{ d.file }}</span>
-                                </span>
-                            </button>
-                        </div>
+                        <button @click="open(dl.url)" type="button"
+                                class="w-full flex items-center gap-3 px-4 py-3 rounded-2xl text-left text-white bg-[#013E74] hover:bg-[#0a4f92] shadow-sm transition">
+                            <MaterialDesignIcon icon-name="download" class="w-5 h-5 shrink-0"/>
+                            <span class="min-w-0">
+                                <span class="block font-bold">Download from {{ sourceName(dl) }}</span>
+                                <span class="block text-xs opacity-80 truncate">{{ dl.file }}</span>
+                            </span>
+                        </button>
                     </template>
                     <template v-else-if="u.kind === 'docker'">
                         <p class="text-sm text-gray-700 dark:text-zinc-300">Update the container where MeshChat runs:</p>
                         <pre class="text-xs rounded-xl p-3 bg-gray-100 dark:bg-zinc-800 overflow-x-auto select-all">docker compose pull
 docker compose up -d</pre>
                     </template>
-                    <template v-else>
-                        <button v-for="d in u.downloads" :key="d.source" @click="open(d.page)" type="button"
+                    <template v-else-if="dl">
+                        <button @click="open(dl.page)" type="button"
                                 class="w-full inline-flex items-center justify-center gap-2 px-5 py-3 rounded-2xl font-bold text-white bg-[#013E74] hover:bg-[#0a4f92] shadow-sm transition">
                             <MaterialDesignIcon icon-name="open-in-new" class="w-5 h-5"/>
-                            Open the downloads on {{ d.source === 'GitHub' ? 'GitHub' : 'the LCS mirror' }}
+                            Open the downloads on {{ sourceName(dl) }}
                         </button>
                     </template>
 
@@ -56,8 +54,8 @@ docker compose up -d</pre>
                         </summary>
                         <div class="pt-2 max-h-48 overflow-y-auto whitespace-pre-wrap text-xs leading-relaxed text-gray-600 dark:text-zinc-400">{{ u.notes }}</div>
                     </details>
-                    <div v-if="files.length" class="flex flex-wrap gap-x-4 gap-y-1">
-                        <button v-for="d in u.downloads" :key="d.source + '-page'" @click="open(d.page)" type="button" class="text-xs text-gray-500 dark:text-zinc-400 underline underline-offset-2">All downloads on {{ d.source === 'GitHub' ? 'GitHub' : 'the LCS mirror' }}</button>
+                    <div v-if="dl && dl.url">
+                        <button @click="open(dl.page)" type="button" class="text-xs text-gray-500 dark:text-zinc-400 underline underline-offset-2">All downloads on {{ sourceName(dl) }}</button>
                     </div>
                 </div>
 
@@ -89,8 +87,8 @@ export default {
     computed: {
         // wait until the LCS Global start-up popup is out of the way
         visible() { return this.shown && !this.closed && !this.lg.popup; },
-        // newest first; only links to a file of the same kind as this install
-        files() { return (this.u?.downloads ?? []).filter((d) => d.url).sort((a, b) => (a.version === this.u.latest ? -1 : 0) - (b.version === this.u.latest ? -1 : 0)); },
+        // the one download offered: GitHub's, or the LCS mirror's when GitHub has none
+        dl() { return this.u?.download ?? null; },
         howTo() {
             return {
                 "win-installer": "Download the new installer and run it. It installs over this version and keeps your messages and settings.",
@@ -117,6 +115,9 @@ export default {
         }
     },
     methods: {
+        sourceName(d) {
+            return d.source === "GitHub" ? "GitHub" : "the LCS mirror";
+        },
         open(url) {
             window.open(url, "_blank", "noopener");
         },
