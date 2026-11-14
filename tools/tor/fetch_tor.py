@@ -35,9 +35,12 @@ ROOT = os.path.normpath(os.path.join(HERE, "..", ".."))
 OUT = os.path.join(ROOT, "tor")
 
 TOR_VERSION = "0.4.9.15"          # the release reviewed for LCS MeshChat 2.1.0
+# The Tor Browser release whose Expert Bundle ships exactly TOR_VERSION. Pinned so a new Tor
+# release can't change what goes into a build: to move to a newer tor, review it, then update
+# both lines together (and the Dockerfile's TOR_VERSION and source tarball).
+TOR_BROWSER_VERSION = "16.0"      # Tor Browser 16.0 (October 29, 2026) ships tor 0.4.9.15
 TB_KEY_FPR = "EF6E286DDA85EA2A4BA7DE684E2C6E8793298290"   # Tor Browser Developers (signing key)
 TB_KEY_EMAIL = "torbrowser@torproject.org"
-DOWNLOADS_JSON = "https://aus1.torproject.org/torbrowser/update_3/release/downloads.json"
 DIST = "https://dist.torproject.org/torbrowser/{tb}/"
 ARCHIVE = "https://archive.torproject.org/tor-package-archive/torbrowser/{tb}/"
 
@@ -127,7 +130,7 @@ def find_tor_program(root: str, exe_name: str) -> str | None:
 
 def main():
     tag = platform_tag()
-    tb = os.environ.get("TOR_BROWSER_VERSION") or json.loads(get(DOWNLOADS_JSON))["version"]
+    tb = os.environ.get("TOR_BROWSER_VERSION") or TOR_BROWSER_VERSION
     bundle = f"tor-expert-bundle-{tag}-{tb}.tar.gz"
     print(f"fetch_tor: Tor Browser {tb}, {bundle}")
     with tempfile.TemporaryDirectory() as tmp:
@@ -186,8 +189,8 @@ def main():
     found = re.match(r"Tor version (\d+\.\d+\.\d+\.\d+)\b", first)
     if not found or found.group(1) != TOR_VERSION:
         shutil.rmtree(OUT, ignore_errors=True)
-        die(f"the bundle's tor is {first or 'unknown'}, not {TOR_VERSION}. Set TOR_BROWSER_VERSION to the "
-            f"Tor Browser release that ships tor {TOR_VERSION}, or update TOR_VERSION after reviewing the new release.")
+        die(f"the bundle's tor is {first or 'unknown'}, not {TOR_VERSION}. TOR_BROWSER_VERSION ({tb}) must be "
+            f"the Tor Browser release that ships tor {TOR_VERSION}; update both together after reviewing a new release.")
     # Tor's license (3-clause BSD) must travel with the binary: take it from the reviewed source release
     src = os.path.join(HERE, f"tor-{TOR_VERSION}.tar.gz")
     if os.path.exists(src):
