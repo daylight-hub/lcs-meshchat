@@ -30,6 +30,8 @@ jobs:
     permissions:
       packages: write
       contents: read
+      id-token: write # sign the build attestation
+      attestations: write # store the build attestation
     steps:
       - uses: actions/checkout@v4
         with:
@@ -48,6 +50,7 @@ jobs:
           username: ${{ github.actor }}
           password: ${{ secrets.GITHUB_TOKEN }}
       - name: Build and push Docker images
+        id: push
         uses: docker/build-push-action@v5
         with:
           context: .
@@ -63,12 +66,22 @@ jobs:
             org.opencontainers.image.source=${{ github.server_url }}/${{ github.repository }}
             org.opencontainers.image.url=${{ github.server_url }}/${{ github.repository }}
             org.opencontainers.image.revision=${{ github.sha }}
+      - name: Attest build provenance (Docker image)
+        # signed record that this image was built by this workflow from this commit.
+        # check with: gh attestation verify oci://ghcr.io/daylight-hub/lcs-meshchat:latest -R daylight-hub/lcs-meshchat
+        uses: actions/attest-build-provenance@v3
+        with:
+          subject-name: ${{ steps.img.outputs.name }}
+          subject-digest: ${{ steps.push.outputs.digest }}
+          push-to-registry: true
 
   build_windows:
     if: startsWith(github.ref, 'refs/tags/') || (github.event_name == 'workflow_dispatch' && inputs.make_release)
     runs-on: windows-latest
     permissions:
       contents: write
+      id-token: write # sign the build attestation
+      attestations: write # store the build attestation
     steps:
       - uses: actions/checkout@v4
         with:
@@ -92,6 +105,15 @@ jobs:
         shell: bash
         run: python .github/scripts/release_notes.py "${{ env.RELEASE_TAG }}" --output RELEASE_NOTES.md
 
+      - name: Attest build provenance
+        # signed record that these files were built by this workflow from this commit.
+        # check a download with: gh attestation verify <file> -R daylight-hub/lcs-meshchat
+        uses: actions/attest-build-provenance@v3
+        with:
+          subject-path: |
+            dist/*-win-installer.exe
+            dist/*-win-portable.exe
+
       - name: Create / update Release
         uses: ncipollo/release-action@v1
         with:
@@ -113,6 +135,8 @@ jobs:
     runs-on: ${{ matrix.os }}
     permissions:
       contents: write
+      id-token: write # sign the build attestation
+      attestations: write # store the build attestation
     steps:
       - uses: actions/checkout@v4
         with:
@@ -158,6 +182,14 @@ jobs:
         shell: bash
         run: python .github/scripts/release_notes.py "${{ env.RELEASE_TAG }}" --output RELEASE_NOTES.md
 
+      - name: Attest build provenance
+        # signed record that these files were built by this workflow from this commit.
+        # check a download with: gh attestation verify <file> -R daylight-hub/lcs-meshchat
+        uses: actions/attest-build-provenance@v3
+        with:
+          subject-path: |
+            dist/*-mac-*.dmg
+
       - name: Create / update Release
         uses: ncipollo/release-action@v1
         with:
@@ -175,6 +207,8 @@ jobs:
     runs-on: ubuntu-latest
     permissions:
       contents: write
+      id-token: write # sign the build attestation
+      attestations: write # store the build attestation
     steps:
       - uses: actions/checkout@v4
         with:
@@ -197,6 +231,14 @@ jobs:
       - name: Generate release notes
         shell: bash
         run: python .github/scripts/release_notes.py "${{ env.RELEASE_TAG }}" --output RELEASE_NOTES.md
+
+      - name: Attest build provenance
+        # signed record that these files were built by this workflow from this commit.
+        # check a download with: gh attestation verify <file> -R daylight-hub/lcs-meshchat
+        uses: actions/attest-build-provenance@v3
+        with:
+          subject-path: |
+            dist/*-linux.AppImage
 
       - name: Create / update Release
         uses: ncipollo/release-action@v1

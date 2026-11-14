@@ -138,6 +138,17 @@ def main():
     if not parts:
         parts.append("No release notes were generated for this build.")
 
+    repo = os.environ.get("GITHUB_REPOSITORY", "daylight-hub/lcs-meshchat")
+    parts.append(
+        "### Verify your download\n\n"
+        "These files were built on GitHub from the source code in this repository, "
+        "and GitHub signed a record of the exact commit they came from. To check a "
+        "file you downloaded, install the GitHub CLI and run:\n\n"
+        "```\n"
+        f"gh attestation verify <downloaded file> -R {repo}\n"
+        "```"
+    )
+
     body = "\n\n".join(parts) + "\n"
 
     if output:

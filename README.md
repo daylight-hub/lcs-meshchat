@@ -52,6 +52,18 @@ docker run -d --name lcs-meshchat --restart unless-stopped \
   --storage-dir=/config/.meshchat --headless
 ```
 
+**Verify your download.** Every installer and Docker image is built on GitHub
+from the source code in this repository, and GitHub signs a record of exactly
+which commit it came from. With the GitHub CLI installed, check a file with:
+
+```sh
+gh attestation verify <downloaded file> -R daylight-hub/lcs-meshchat
+gh attestation verify oci://ghcr.io/daylight-hub/lcs-meshchat:latest -R daylight-hub/lcs-meshchat
+```
+
+A passing check means the file is exactly what GitHub built from this
+repository. If it fails, don't install it.
+
 ---
 
 ## Features
