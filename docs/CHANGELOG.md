@@ -3,6 +3,8 @@
 Version history for LCS MeshChat. The release workflow reads the
 section matching the version being built and uses it as the release body.
 
+### What’s new in v2.1.2
+
 ### What's new in v2.1.1
 
 - **Mac and Linux: the built-in Tor works.** The build tool used for MeshChat's
