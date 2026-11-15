@@ -1479,6 +1479,14 @@ class ReticulumMeshChat:
                 if host_value and await asyncio.to_thread(self.lcs_global.is_reserved_resolved, host_value):
                     return web.json_response({"message": LCS_RESERVED_MESSAGE}, status=422)
 
+            # network client and server connections are only added through Add LCS Interfaces
+            # (IP RNode, Command Center PRO); an existing one can still be edited
+            existing_type = (interfaces.get(interface_name) or {}).get("type")
+            if interface_type in ("TCPClientInterface", "TCPServerInterface") and existing_type != interface_type:
+                return web.json_response({
+                    "message": "This connection type isn't available here. Use Add LCS Interfaces for IP RNode or Command Center PRO.",
+                }, status=422)
+
             # ensure name is not for an existing interface, to prevent overwriting
             if allow_overwriting_interface is False and interface_name in interfaces:
                 return web.json_response({
@@ -1525,6 +1533,11 @@ class ReticulumMeshChat:
                     return web.json_response({
                         "message": "Target Port is required",
                     }, status=422)
+
+                # IP RNode and Command Center PRO keep the address LCS gave them
+                existing_host = str(interface_details.get("target_host") or "").strip().lower().rstrip(".")
+                if interface_name in ("IP RNode", "Command Center PRO Client") or existing_host in ("iprnode.local", "liberty.local"):
+                    interface_target_host = interface_details.get("target_host") or interface_target_host
 
                 # set required TCPClientInterface options
                 interface_details["target_host"] = interface_target_host

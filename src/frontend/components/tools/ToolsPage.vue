@@ -234,7 +234,7 @@
                                     <tbody class="divide-y dark:divide-zinc-700">
                                         <tr><td class="px-3 py-2 font-semibold">Platform</td><td class="px-3 py-2">Android phones and tablets</td><td class="px-3 py-2">Windows, macOS, Linux</td><td class="px-3 py-2">Dedicated LCS handheld</td></tr>
                                         <tr class="bg-gray-50 dark:bg-zinc-800/50"><td class="px-3 py-2 font-semibold">Interface</td><td class="px-3 py-2">Native Android app</td><td class="px-3 py-2">Desktop app or browser</td><td class="px-3 py-2">On-device — no phone or PC</td></tr>
-                                        <tr><td class="px-3 py-2 font-semibold">Connections</td><td class="px-3 py-2">Bluetooth LE, Wi-Fi, USB-C RNode, TCP</td><td class="px-3 py-2">Wi-Fi/Ethernet, USB or IP RNode, TCP, I2P</td><td class="px-3 py-2">Built-in LoRa radio; Wi-Fi where supported</td></tr>
+                                        <tr><td class="px-3 py-2 font-semibold">Connections</td><td class="px-3 py-2">Bluetooth LE, Wi-Fi, USB-C RNode, LCS Global</td><td class="px-3 py-2">Wi-Fi/Ethernet, USB or IP RNode, LCS Global, Tor, I2P</td><td class="px-3 py-2">Built-in LoRa radio; Wi-Fi where supported</td></tr>
                                         <tr class="bg-gray-50 dark:bg-zinc-800/50"><td class="px-3 py-2 font-semibold">Text and files</td><td class="px-3 py-2">Yes</td><td class="px-3 py-2">Yes (10 MB receive limit)</td><td class="px-3 py-2">Yes (storage limited)</td></tr>
                                         <tr><td class="px-3 py-2 font-semibold">PTT voice</td><td class="px-3 py-2">Codec2 and Opus</td><td class="px-3 py-2">Codec2 and Opus</td><td class="px-3 py-2">Limited</td></tr>
                                         <tr class="bg-gray-50 dark:bg-zinc-800/50"><td class="px-3 py-2 font-semibold">Live voice</td><td class="px-3 py-2">Yes, mid-call codec switching</td><td class="px-3 py-2">Yes, mid-call codec switching</td><td class="px-3 py-2">Basic</td></tr>
@@ -245,7 +245,7 @@
                             <ul class="list-disc ml-5 space-y-1 mt-3">
                                 <li>Liberty Chat ships with LCS radio defaults: slot 51, 914.875 MHz, 22 dBm, Long Fast preset.</li>
                                 <li>LCS MeshChat is the right choice for a machine that stays on, because it can host a propagation node for the whole local segment.</li>
-                                <li>The <b>Command Center PRO Gateway</b> runs Reticulum continuously as fixed or mobile infrastructure, bridging LoRa, packet radio, Wi-Fi and TCP/IP, and hosting MeshChat at <code>liberty.local</code>.</li>
+                                <li>The <b>Command Center PRO Gateway</b> runs Reticulum continuously as fixed or mobile infrastructure, bridging LoRa, packet radio, Wi-Fi and Ethernet, and hosting MeshChat at <code>liberty.local</code>.</li>
                             </ul>
                         </section>
 
@@ -284,16 +284,17 @@
                                         <tr><td class="px-3 py-2 font-semibold">RNode (LoRa)</td><td class="px-3 py-2">902–928 MHz ISM</td><td class="px-3 py-2">Licence-free. USB-C, Bluetooth LE, or Wi-Fi (IP RNode). ~341 bps – 21.88 kbps.</td></tr>
                                         <tr class="bg-gray-50 dark:bg-zinc-800/50"><td class="px-3 py-2 font-semibold">Packet Radio</td><td class="px-3 py-2">VHF 150–174 / UHF 450–470 MHz</td><td class="px-3 py-2">Long-haul links between gateways. FCC licence required for encrypted operation.</td></tr>
                                         <tr><td class="px-3 py-2 font-semibold">AutoInterface</td><td class="px-3 py-2">Local Wi-Fi or Ethernet</td><td class="px-3 py-2">Zero configuration. Requires UDP ports 29716 and 42671.</td></tr>
-                                        <tr class="bg-gray-50 dark:bg-zinc-800/50"><td class="px-3 py-2 font-semibold">TCP Client/Server</td><td class="px-3 py-2">Internet or private IP</td><td class="px-3 py-2">Client mode needs no public IP or port forwarding.</td></tr>
-                                        <tr><td class="px-3 py-2 font-semibold">I2P</td><td class="px-3 py-2">Anonymizing overlay</td><td class="px-3 py-2">Reachable without a public IP; endpoint IPs are not exposed. Requires i2pd on the host.</td></tr>
-                                        <tr class="bg-gray-50 dark:bg-zinc-800/50"><td class="px-3 py-2 font-semibold">Bluetooth LE</td><td class="px-3 py-2">Short-range personal radio</td><td class="px-3 py-2">Enabled by default in Liberty Chat.</td></tr>
-                                        <tr><td class="px-3 py-2 font-semibold">Serial / USB-C</td><td class="px-3 py-2">Direct cable</td><td class="px-3 py-2">The most straightforward client connection.</td></tr>
+                                        <tr class="bg-gray-50 dark:bg-zinc-800/50"><td class="px-3 py-2 font-semibold">LCS Global</td><td class="px-3 py-2">Wi-Fi or mobile data</td><td class="px-3 py-2">Reaches the Liberty network from anywhere. Set up by its subscription; free 7-day trial.</td></tr>
+                                        <tr><td class="px-3 py-2 font-semibold">Tor</td><td class="px-3 py-2">Wi-Fi or mobile data, through Tor</td><td class="px-3 py-2">Optional for LCS Global. Hides this device's internet address from LCS and from anyone watching the connection.</td></tr>
+                                        <tr class="bg-gray-50 dark:bg-zinc-800/50"><td class="px-3 py-2 font-semibold">I2P</td><td class="px-3 py-2">Anonymizing overlay</td><td class="px-3 py-2">Reachable without a public IP; endpoint IPs are not exposed. Requires i2pd on the host.</td></tr>
+                                        <tr><td class="px-3 py-2 font-semibold">Bluetooth LE</td><td class="px-3 py-2">Short-range personal radio</td><td class="px-3 py-2">Enabled by default in Liberty Chat.</td></tr>
+                                        <tr class="bg-gray-50 dark:bg-zinc-800/50"><td class="px-3 py-2 font-semibold">Serial / USB-C</td><td class="px-3 py-2">Direct cable</td><td class="px-3 py-2">The most straightforward client connection.</td></tr>
                                     </tbody>
                                 </table>
                             </div>
                             <p class="mt-3 text-gray-600 dark:text-gray-300">
-                                A fresh Liberty Chat install uses AutoInterface and Bluetooth LE only. No traffic
-                                reaches the internet until a TCP interface is added or an RNode is attached.
+                                A fresh Liberty Chat install uses AutoInterface and Bluetooth LE only. Nothing
+                                reaches the internet until LCS Global is added.
                             </p>
                             <h4 class="font-semibold mt-4 mb-2">Combined function hardware</h4>
                             <p>
@@ -534,14 +535,14 @@
                                     <div class="font-semibold mb-1">Every device</div>
                                     <ul class="list-disc ml-5 space-y-1 text-xs">
                                         <li>An identity — generated at first launch, backed up somewhere safe</li>
-                                        <li>At least one interface — a radio, a Wi-Fi connection, or a TCP server address</li>
+                                        <li>At least one interface — a radio, a Wi-Fi connection, or LCS Global</li>
                                         <li>An announce — sent once at setup, and again after any change in connection</li>
                                     </ul>
                                 </div>
                                 <div class="rounded-lg border dark:border-zinc-700 p-3">
                                     <div class="font-semibold mb-1">For offline delivery</div>
                                     <ul class="list-disc ml-5 space-y-1 text-xs">
-                                        <li>At least one propagation node that stays powered — a Command Center Gateway, the LCS server, or a desktop running MeshChat</li>
+                                        <li>At least one propagation node that stays powered — a Command Center Gateway, LCS Global, or a desktop running MeshChat</li>
                                     </ul>
                                 </div>
                                 <div class="rounded-lg border dark:border-zinc-700 p-3">
@@ -554,7 +555,7 @@
                                 <div class="rounded-lg border dark:border-zinc-700 p-3">
                                     <div class="font-semibold mb-1">For live voice</div>
                                     <ul class="list-disc ml-5 space-y-1 text-xs">
-                                        <li>A link with enough capacity: Wi-Fi, Ethernet, TCP, or LoRa at Short Fast or faster. Otherwise use PTT voice clips.</li>
+                                        <li>A link with enough capacity: Wi-Fi, Ethernet, LCS Global, or LoRa at Short Fast or faster. Otherwise use PTT voice clips.</li>
                                     </ul>
                                 </div>
                                 <div class="rounded-lg border dark:border-zinc-700 p-3">
@@ -578,8 +579,8 @@
                         <!-- network diagram -->
                         <section>
                             <h3 class="text-lg font-bold text-[#1e5aa0] dark:text-blue-400 pb-1 mb-3 border-b-2 border-[#1e5aa0]/30">The LCS Network</h3>
-                            <button type="button" @click="guideZoom = '/assets/images/guide/network-diagram.png'" class="block w-full">
-                                <img src="/assets/images/guide/network-diagram.png" alt="The LCS Network diagram" class="w-full rounded-lg border dark:border-zinc-700 bg-white cursor-zoom-in shadow-sm" />
+                            <button type="button" @click="guideZoom = '/assets/images/guide/network-map.jpg'" class="block w-full">
+                                <img src="/assets/images/guide/network-map.jpg" alt="LCS Network Map: Liberty Chat, LCS MeshChat, RNodes and Command Center PRO connected by LoRa, packet radio, Wi-Fi and LCS Global" class="w-full rounded-lg border dark:border-zinc-700 bg-white cursor-zoom-in shadow-sm" />
                             </button>
                             <div class="text-xs text-center text-gray-500 dark:text-gray-400 italic mt-1">AES-256 encrypted voice, text and data · tap to enlarge</div>
                         </section>
@@ -704,24 +705,24 @@ export default {
                 },
                 {
                     id: 2,
-                    title: "Scenario 2 — Liberty Chat and LCS MeshChat over the internet",
+                    title: "Scenario 2 — Liberty Chat and LCS MeshChat over LCS Global",
                     image: "/assets/images/guide/scenario2.png",
-                    caption: "Two applications meeting on the LCS TCP server",
+                    caption: "Two applications meeting on LCS Global",
                     requirements: [
-                        "An Android phone running Liberty Chat, with any internet connection",
+                        "An Android phone running Liberty Chat, on Wi-Fi or mobile data",
                         "A Windows or Mac computer running LCS MeshChat",
-                        "A TCP Client interface on each, pointed at the LCS server",
+                        "LCS Global on each (free 7-day trial)",
                         "No radio hardware",
                     ],
                     how: [
-                        "Both apps open an outbound TCP connection. No public IP, static address or port forwarding is needed on either end.",
-                        "The server acts as a transport node, learning both announces and routing between them.",
-                        "As a propagation node, it holds messages for offline users and delivers them on reconnection.",
+                        "Both apps connect to LCS Global over Wi-Fi or mobile data. No public IP, static address or port forwarding is needed on either end.",
+                        "LCS Global relays between them, learning both announces and routing messages and calls.",
+                        "It holds messages for anyone offline and delivers them when they reconnect.",
                     ],
                     notes: [
-                        "This is the fastest way to verify the network before radio hardware is available.",
-                        "Bandwidth over TCP supports Opus high-bandwidth voice and full-quality live calls.",
-                        "Replacing the TCP interface with I2P hides both endpoints' IP addresses, with no change in behaviour.",
+                        "This is the fastest way to try the network before radio hardware is available.",
+                        "LCS Global is fast enough for high-quality voice messages and live calls.",
+                        "Turning on Tor hides both devices' internet addresses, with no change in how messaging works.",
                     ],
                 },
                 {
