@@ -118,6 +118,10 @@ jobs:
         uses: ncipollo/release-action@v1
         with:
           tag: ${{ env.RELEASE_TAG }}
+          # the tag goes on the commit that was built (not wherever the branch is
+          # when the draft is published), so the tag, the files and their
+          # attestations all name the same commit
+          commit: ${{ github.sha }}
           draft: true
           allowUpdates: true
           replacesArtifacts: true
@@ -194,6 +198,10 @@ jobs:
         uses: ncipollo/release-action@v1
         with:
           tag: ${{ env.RELEASE_TAG }}
+          # the tag goes on the commit that was built (not wherever the branch is
+          # when the draft is published), so the tag, the files and their
+          # attestations all name the same commit
+          commit: ${{ github.sha }}
           draft: true
           allowUpdates: true
           replacesArtifacts: true
@@ -244,6 +252,10 @@ jobs:
         uses: ncipollo/release-action@v1
         with:
           tag: ${{ env.RELEASE_TAG }}
+          # the tag goes on the commit that was built (not wherever the branch is
+          # when the draft is published), so the tag, the files and their
+          # attestations all name the same commit
+          commit: ${{ github.sha }}
           draft: true
           allowUpdates: true
           replacesArtifacts: true
