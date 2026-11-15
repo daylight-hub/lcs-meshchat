@@ -3,7 +3,7 @@
         <div class="overflow-y-auto p-2 space-y-2">
 
             <!-- LCS Global: the internet connection to the Liberty network -->
-            <div v-if="!isEditingInterface && newInterfaceType !== 'LCSGlobal'"
+            <div v-if="!isEditingInterface && !isLcsType"
                  class="relative overflow-hidden rounded-2xl text-white shadow-[0_16px_40px_rgba(1,62,116,0.25)] bg-[radial-gradient(120%_140%_at_0%_0%,#0a4f92_0%,#013E74_45%,#062b52_100%)]">
                 <div class="absolute inset-0 pointer-events-none bg-[radial-gradient(60%_80%_at_100%_0%,rgba(232,200,106,0.18),transparent_60%)]"></div>
                 <div class="relative flex flex-col sm:flex-row sm:items-center gap-4 p-4 sm:p-5">
@@ -30,7 +30,7 @@
 
                     <!-- iGeneric interface settings -->
                     <!-- interface name -->
-                    <div v-if="newInterfaceType !== 'LCSGlobal'">
+                    <div v-if="!isLcsType">
                         <FormLabel class="mb-1">Name</FormLabel>
                         <input type="text" :disabled="isEditingInterface" placeholder="New Interface Name"
                                v-model="newInterfaceName"
@@ -44,16 +44,18 @@
                         <FormLabel class="mb-1">Type</FormLabel>
                         <select v-model="newInterfaceType" class="bg-gray-50 border border-gray-300 text-gray-900 text-sm rounded-lg focus:ring-blue-500 focus:border-blue-500 block w-full p-2.5 dark:bg-zinc-900 dark:border-zinc-600 dark:text-white">
                             <option disabled selected>--</option>
-                            <option v-if="!isEditingInterface" value="LCSGlobal">LCS Global (internet, subscription)</option>
                             <option value="AutoInterface">Auto Interface</option>
                             <option disabled selected>RNodes</option>
                             <option value="RNodeInterface">RNode Interface</option>
                             <option value="RNodeMultiInterface">RNode Multi Interface</option>
-                            <option disabled selected>IP Networks</option>
-                            <option value="TCPClientInterface">TCP Client Interface</option>
-                            <option value="TCPServerInterface">TCP Server Interface</option>
+                            <option disabled selected>Networks</option>
                             <option value="UDPInterface">UDP Interface</option>
+                            <option v-if="!isEditingInterface" value="LCSGlobal">LCS Global</option>
+                            <option v-if="!isEditingInterface" value="Tor">Tor</option>
                             <option value="I2PInterface">I2P Interface</option>
+                            <!-- only so an existing one (IP RNode, Command Center PRO) can be edited -->
+                            <option v-if="isEditingInterface && newInterfaceType === 'TCPClientInterface'" value="TCPClientInterface">Network Client</option>
+                            <option v-if="isEditingInterface && newInterfaceType === 'TCPServerInterface'" value="TCPServerInterface">Network Server</option>
                             <option disabled selected>Hardware</option>
                             <option value="SerialInterface">Serial Interface</option>
                             <option value="KISSInterface">KISS Interface</option>
@@ -77,11 +79,31 @@
                         <LcsGlobalPanel @done="$router.push({ name: 'lcs-global' })"/>
                     </div>
 
+                    <!-- Tor: carries LCS Global through the Tor network -->
+                    <div v-if="newInterfaceType === 'Tor'" class="space-y-3">
+                        <p class="text-sm text-gray-600 dark:text-zinc-300">
+                            Tor sends your LCS Global connection through the Tor network, so neither LCS nor anyone
+                            watching your connection sees this computer's internet address. It works over Wi-Fi or
+                            mobile data.
+                        </p>
+                        <LcsGlobalTor v-if="lcsGlobal.hasAccess && lcsGlobal.data"/>
+                        <div v-else class="rounded-2xl p-4 text-sm bg-gray-50 dark:bg-zinc-800 text-gray-700 dark:text-zinc-300 flex flex-col sm:flex-row sm:items-center gap-3">
+                            <div class="flex-1">Tor runs on top of LCS Global. Set up LCS Global first, then turn Tor on here.</div>
+                            <button @click="newInterfaceType = 'LCSGlobal'" type="button"
+                                    class="shrink-0 px-4 py-2 rounded-xl font-bold text-[#062b52] bg-[#E8C86A] hover:bg-[#f0d47f] shadow-sm transition">
+                                Set up LCS Global
+                            </button>
+                        </div>
+                    </div>
+
                     <!-- TCPClientInterface -->
                     <!-- interface target host -->
                     <div v-if="newInterfaceType === 'TCPClientInterface'" class="mb-2">
                         <FormLabel class="mb-1">Target Host</FormLabel>
-                        <input type="text" placeholder="e.g: example.com" v-model="newInterfaceTargetHost" class="bg-gray-50 border border-gray-300 text-gray-900 text-sm rounded-lg focus:ring-blue-500 focus:border-blue-500 block w-full p-2.5 dark:bg-zinc-900 dark:border-zinc-600 dark:text-white dark:focus:ring-blue-600 dark:focus:border-blue-600">
+                        <input type="text" placeholder="e.g: example.com" v-model="newInterfaceTargetHost" :disabled="isHostLocked"
+                               :title="isHostLocked ? 'Set by LCS. Remove and add it again from Add LCS Interfaces to change it.' : ''"
+                               :class="{ 'cursor-not-allowed opacity-70': isHostLocked }" class="bg-gray-50 border border-gray-300 text-gray-900 text-sm rounded-lg focus:ring-blue-500 focus:border-blue-500 block w-full p-2.5 dark:bg-zinc-900 dark:border-zinc-600 dark:text-white dark:focus:ring-blue-600 dark:focus:border-blue-600">
+                        <FormSubLabel v-if="isHostLocked">Set by LCS, so it can't be changed here.</FormSubLabel>
                     </div>
 
                     <!-- interface target port -->
@@ -741,7 +763,7 @@
             </ExpandingSection>
 
             <!-- optional interface settings -->
-            <ExpandingSection v-if="newInterfaceType !== 'LCSGlobal'">
+            <ExpandingSection v-if="!isLcsType">
                 <template v-slot:title>Optional Interface Settings</template>
                 <template v-slot:content>
                     <div class="p-2 space-y-3">
@@ -776,7 +798,7 @@
             </ExpandingSection>
 
             <!-- ifac settings -->
-            <ExpandingSection v-if="newInterfaceType !== 'LCSGlobal'">
+            <ExpandingSection v-if="!isLcsType">
                 <template v-slot:title>IFAC Settings</template>
                 <template v-slot:content>
                     <div class="p-2">
@@ -817,7 +839,7 @@
             </ExpandingSection>
 
             <!-- add/save interface button -->
-            <div v-if="newInterfaceType !== 'LCSGlobal'" class="p-2 bg-white rounded shadow divide-y divide-gray-200 dark:bg-zinc-900">
+            <div v-if="!isLcsType" class="p-2 bg-white rounded shadow divide-y divide-gray-200 dark:bg-zinc-900">
                 <button @click="addInterface" type="button" class="bg-green-500 hover:bg-green-400 focus-visible:outline-green-500 my-auto inline-flex items-center gap-x-1 rounded-md p-2 text-sm font-semibold text-white shadow-sm focus-visible:outline focus-visible:outline-2 focus-visible:outline-offset-2 dark:text-white dark:focus:ring-blue-600 dark:focus:border-blue-600">
                     <span v-if="isEditingInterface">Save Interface</span>
                     <span v-else>Add Interface</span>
@@ -842,7 +864,7 @@
                     <p>
                         Interfaces are how MeshChat connects to a Reticulum network — over the internet, your
                         local network, or radio hardware. You can add as many as you like and mix them freely.
-                        If you're not sure, start with <b>LCS Global</b> (the free 7-day trial, first in the Type list) or
+                        If you're not sure, start with <b>LCS Global</b> (the free 7-day trial) or
                         <b>Auto Interface</b>.
                     </p>
 
@@ -945,12 +967,14 @@ import ExpandingSection from "./ExpandingSection.vue";
 import FormLabel from "../forms/FormLabel.vue";
 import FormSubLabel from "../forms/FormSubLabel.vue";
 import LcsGlobalPanel from "../lcsglobal/LcsGlobalPanel.vue";
+import LcsGlobalTor from "../lcsglobal/LcsGlobalTor.vue";
 import LcsGlobal from "../../js/LcsGlobal";
 
 export default {
     name: 'AddInterfacePage',
     components: {
         LcsGlobalPanel,
+        LcsGlobalTor,
         FormSubLabel,
         FormLabel,
         ExpandingSection,
@@ -959,6 +983,7 @@ export default {
         return {
 
             isEditingInterface: false,
+            editingOriginalHost: null,
             lcsGlobal: LcsGlobal,
 
             config: null,
@@ -1030,25 +1055,25 @@ export default {
                     warning: "If your WiFi router has client/AP isolation turned on, discovery is blocked — that's the usual reason it doesn't work. Firewalls may need UDP ports 29716 and 42671 open.",
                 },
                 {
-                    name: "TCP Client Interface",
-                    tagline: "Connect to a server over the internet",
-                    body: "Connects out to a remote Reticulum node you specify by hostname or IP and port. This is how you join other people's Reticulum servers. (For the Liberty network over the internet, use LCS Global instead.) Reconnects on its own if the link drops. The most common way to get on the wider network.",
-                },
-                {
-                    name: "TCP Server Interface",
-                    tagline: "Let others connect to you",
-                    body: "Listens for incoming connections so other people can link to your node. Useful if you're hosting a gateway or transport node. Many clients can connect to one server at once.",
-                    warning: "You'll usually need a reachable IP address and a forwarded port on your router.",
-                },
-                {
                     name: "UDP Interface",
                     tagline: "Broadcast on a local network",
                     body: "Talks to peers on your local network using UDP broadcast. Auto Interface is easier and performs considerably better for the same job — use UDP only when you need specific ports or addresses, or when Auto Interface won't work in your environment.",
                 },
                 {
+                    name: "LCS Global",
+                    tagline: "The Liberty network, from anywhere",
+                    body: "Connects you to the Liberty network over Wi-Fi or mobile data, so you can reach people out of radio range. Its settings come from LCS and update by themselves. Free 7-day trial.",
+                },
+                {
+                    name: "Tor",
+                    tagline: "LCS Global, without revealing your internet address",
+                    body: "Sends your LCS Global connection through the Tor network, so neither LCS nor anyone watching your connection sees this computer's internet address. Messages work as usual; voice calls get a short delay.",
+                    warning: "Needs LCS Global. The first connection can take a minute while Tor starts.",
+                },
+                {
                     name: "I2P Interface",
                     tagline: "Reachable and private, without a public IP",
-                    body: "Connects over the Invisible Internet Project. You get a persistent, portable address that works even behind a firewall, on a changing IP, or with no public IP at all — and neither end's IP address is exposed. Add peers by their .b32.i2p address. Behaves just like a TCP interface once connected, so it's a drop-in privacy upgrade.",
+                    body: "Connects over the Invisible Internet Project. You get a persistent, portable address that works even behind a firewall, on a changing IP, or with no public IP at all — and neither end's IP address is exposed. Add peers by their .b32.i2p address. Works like any other connection once it's up.",
                     warning: "Requires an I2P router (i2pd) running on the same machine. The first connection can take a few minutes while I2P finds routes.",
                 },
                 {
@@ -1156,6 +1181,17 @@ export default {
         };
     },
     computed: {
+        // LCS Global and Tor are set up by their own panels
+        isLcsType() {
+            return ["LCSGlobal", "Tor"].includes(this.newInterfaceType);
+        },
+        // IP RNode and Command Center PRO always point at their LCS address
+        isHostLocked() {
+            if (!this.isEditingInterface || this.newInterfaceType !== "TCPClientInterface") return false;
+            const host = (this.editingOriginalHost || "").trim().toLowerCase().replace(/\.$/, "");
+            return ["IP RNode", "Command Center PRO Client"].includes(this.newInterfaceName)
+                || ["iprnode.local", "liberty.local"].includes(host);
+        },
         formattedFrequency() {
             const totalHz = this.calculateFrequencyInHz();
             if(totalHz >= 1e9){
@@ -1278,6 +1314,7 @@ export default {
 
                 // tcp client interface
                 this.newInterfaceTargetHost = iface.target_host;
+                this.editingOriginalHost = iface.target_host;
                 this.newInterfaceTargetPort = iface.target_port;
 
                 if (iface.kiss_framing) {

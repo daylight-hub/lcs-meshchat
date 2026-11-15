@@ -29,12 +29,12 @@
                         <span class="shrink-0 text-xs font-bold px-2.5 py-1 rounded-lg bg-[#E8C86A] text-[#062b52]">{{ lcsGlobalButton }}</span>
                     </button>
 
-                    <!-- Command Center PRO Client -->
+                    <!-- Command Center PRO -->
                     <label class="flex items-start gap-3 p-3 rounded-lg border border-gray-200 dark:border-zinc-700 hover:bg-gray-50 dark:hover:bg-zinc-800 cursor-pointer">
                         <input type="checkbox" v-model="lcsForm.command_center" class="mt-1" />
                         <div>
-                            <div class="font-medium text-gray-900 dark:text-zinc-100">Command Center PRO Client</div>
-                            <div class="text-xs text-gray-500 dark:text-zinc-400">liberty.local:4246 — connects to a Command Center PRO on your own network</div>
+                            <div class="font-medium text-gray-900 dark:text-zinc-100">Command Center PRO</div>
+                            <div class="text-xs text-gray-500 dark:text-zinc-400">Connects to a Command Center PRO on your own network</div>
                         </div>
                     </label>
 
@@ -43,7 +43,7 @@
                         <input type="checkbox" v-model="lcsForm.ip_rnode" class="mt-1" />
                         <div>
                             <div class="font-medium text-gray-900 dark:text-zinc-100">IP RNode</div>
-                            <div class="text-xs text-gray-500 dark:text-zinc-400">iprnode.local:4545 — network-attached RNode</div>
+                            <div class="text-xs text-gray-500 dark:text-zinc-400">An RNode radio on your own network</div>
                         </div>
                     </label>
 

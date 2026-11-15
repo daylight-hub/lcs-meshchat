@@ -5,17 +5,12 @@ section matching the version being built and uses it as the release body.
 
 ### What's new in v2.1.2
 
-- **Update check, as in Liberty Chat.** The update popup and **Check for
-  Updates** on the About page now look on GitHub first and offer the file from
-  there. Only if GitHub can't be reached, or has no file of the kind you have
-  installed, do they check the LCS download mirror (public.lcs.network) and
-  offer its file instead. One download button, saying where it's from.
-- **Check for Updates** now checks right there on the About page, shows
-  "Up to date" or a download button, and works on narrow windows too.
-- **Desktop builds use a fixed Tor release.** Builds always take Tor 0.4.9.15
-  from Tor Browser 16.0, so a new Tor release can't change what's built.
-- **Verify your download.** Installers and the Docker image now carry a signed
-  GitHub record of the exact source they were built from.
+- **Verify your download.** Every installer and the Docker image now carry a
+  signed GitHub record of the exact source code they were built from. Check a
+  download with `gh attestation verify <file> -R daylight-hub/lcs-meshchat`
+  (see the README).
+- Simpler interface setup, a clearer update check, and updated guide pages.
+- Builds use a fixed, reviewed Tor release.
 
 ### What's new in v2.1.1
 
